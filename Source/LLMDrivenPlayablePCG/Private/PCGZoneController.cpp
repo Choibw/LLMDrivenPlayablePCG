@@ -29,6 +29,9 @@ void APCGZoneController::GenerateZone()
     ApplyBaseEnvironmentPCG();
     ApplyPathPCG();
     ApplyAreaPCG();
+
+    ClearSpawnedGameplayMarkers();
+    ApplyGameplayMarkers();
 }
 
 void APCGZoneController::UpdateZoneBoundsFromBaseEnvironment()
@@ -349,13 +352,13 @@ void APCGZoneController::LoadSampleZoneJson()
         },
         {
           "area_type": "combat",
-          "normalized_center": { "x": 0.55, "y": 0.40 },
-          "normalized_radius": 0.08,
+          "normalized_center": { "x": 0.40, "y": 0.60 },
+          "normalized_radius": 0.10,
           "detail_density": 0.6
         },
         {
           "area_type": "goal",
-          "normalized_center": { "x": 0.88, "y": 0.53 },
+          "normalized_center": { "x": 0.80, "y": 0.47 },
           "normalized_radius": 0.06,
           "detail_density": 0.4
         }
@@ -756,4 +759,82 @@ void APCGZoneController::OnZoneDataResponseReceived(FHttpRequestPtr Request, FHt
     UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Backend zone JSON applied successfully."));
 
     GenerateZone();
+}
+
+void APCGZoneController::ClearSpawnedGameplayMarkers()
+{
+    for (AActor* Marker : SpawnedGameplayMarkers)
+    {
+        if (IsValid(Marker))
+        {
+            Marker->Destroy();
+        }
+    }
+
+    SpawnedGameplayMarkers.Empty();
+}
+
+void APCGZoneController::ApplyGameplayMarkers()
+{
+    UWorld* World = GetWorld();
+    if (!World)
+    {
+        return;
+    }
+
+    for (const FZoneAreaData& AreaData : CurrentZoneData.Areas)
+    {
+        TSubclassOf<AActor> MarkerClass = nullptr;
+
+        switch (AreaData.AreaType)
+        {
+        case EZoneAreaType::Spawn:
+            MarkerClass = SpawnPointClass;
+            break;
+
+        case EZoneAreaType::Combat:
+            MarkerClass = EnemySpawnPointClass;
+            break;
+
+        case EZoneAreaType::Goal:
+            MarkerClass = GoalPointClass;
+            break;
+
+        case EZoneAreaType::Danger:
+        default:
+            break;
+        }
+
+        if (!MarkerClass)
+        {
+            continue;
+        }
+
+        const float LocalX = (AreaData.NormalizedCenter.X - 0.5f) * CurrentZoneData.ZoneSize.X;
+        const float LocalY = (AreaData.NormalizedCenter.Y - 0.5f) * CurrentZoneData.ZoneSize.Y;
+
+        FVector SpawnLocation = CurrentZoneData.ZoneCenter + FVector(LocalX, LocalY, 0.0f);
+
+        // 디버그 마커가 바닥에 묻히지 않도록 살짝 위로 올림
+        SpawnLocation.Z += 100.0f;
+
+        FActorSpawnParameters SpawnParams;
+        SpawnParams.Owner = this;
+
+        AActor* SpawnedMarker = World->SpawnActor<AActor>(
+            MarkerClass,
+            SpawnLocation,
+            FRotator::ZeroRotator,
+            SpawnParams
+        );
+
+        if (IsValid(SpawnedMarker))
+        {
+            SpawnedGameplayMarkers.Add(SpawnedMarker);
+
+            UE_LOG(LogTemp, Log, TEXT("[GameplayMarker] Spawned marker. Type=%d Location=%s"),
+                static_cast<int32>(AreaData.AreaType),
+                *SpawnLocation.ToString());
+        }
+    }
 }

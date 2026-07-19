@@ -119,6 +119,15 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Area")
     TArray<TObjectPtr<AActor>> AreaPCGActors;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gameplay Marker")
+    TSubclassOf<AActor> SpawnPointClass;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gameplay Marker")
+    TSubclassOf<AActor> EnemySpawnPointClass;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gameplay Marker")
+    TSubclassOf<AActor> GoalPointClass;
+
     // 에디터에서 직접 바꿀 값들
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Zone Data")
     FZoneGenerationData CurrentZoneData;
@@ -150,6 +159,10 @@ private:
     UPROPERTY()
     TObjectPtr<UPCGComponent> BaseEnvironmentPCGComponent;
 
+    // 생성된 액터들을 기억해뒀다가 다음 생성 전에 지우기 위한 액터 배열
+    UPROPERTY()
+    TArray<TObjectPtr<AActor>> SpawnedGameplayMarkers;
+
 private:
     void UpdateZoneBoundsFromBaseEnvironment();
 
@@ -173,4 +186,10 @@ private:
         FHttpResponsePtr Response,
         bool bWasSuccessful
     );
+
+    // 게임플레이 연동 함수들
+
+    void ClearSpawnedGameplayMarkers();
+
+    void ApplyGameplayMarkers();
 };
