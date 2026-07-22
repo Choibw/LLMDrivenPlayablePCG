@@ -16,6 +16,9 @@
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
 
+#include "Kismet/GameplayStatics.h"
+#include "GameFramework/Pawn.h"
+
 // Sets default values
 APCGZoneController::APCGZoneController()
 {
@@ -449,6 +452,34 @@ void APCGZoneController::RequestZoneDataFromBackend()
     UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] HTTP request sent to backend. URL=%s"), *BackendUrl);
 }
 
+void APCGZoneController::MovePlayerToSpawnPoint()
+{
+    if (!IsValid(SpawnPointActor))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] SpawnPointActor is not valid."));
+        return;
+    }
+
+    APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(GetWorld(), 0);
+    if (!IsValid(PlayerPawn))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] PlayerPawn is not valid."));
+        return;
+    }
+
+    FVector TargetLocation = SpawnPointActor->GetActorLocation();
+
+    PlayerPawn->SetActorLocation(
+        TargetLocation,
+        false,
+        nullptr,
+        ETeleportType::TeleportPhysics
+    );
+
+    UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Player moved to SpawnPoint. Location=%s"),
+        *TargetLocation.ToString());
+}
+
 bool APCGZoneController::ApplyZoneJsonString(const FString& JsonString)
 {
     TSharedPtr<FJsonObject> RootObject;
@@ -772,6 +803,7 @@ void APCGZoneController::ClearSpawnedGameplayMarkers()
     }
 
     SpawnedGameplayMarkers.Empty();
+    SpawnPointActor = nullptr;
 }
 
 void APCGZoneController::ApplyGameplayMarkers()
@@ -831,6 +863,11 @@ void APCGZoneController::ApplyGameplayMarkers()
         if (IsValid(SpawnedMarker))
         {
             SpawnedGameplayMarkers.Add(SpawnedMarker);
+
+            if (AreaData.AreaType == EZoneAreaType::Spawn)
+            {
+                SpawnPointActor = SpawnedMarker;
+            }
 
             UE_LOG(LogTemp, Log, TEXT("[GameplayMarker] Spawned marker. Type=%d Location=%s"),
                 static_cast<int32>(AreaData.AreaType),

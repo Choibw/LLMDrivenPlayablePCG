@@ -155,6 +155,9 @@ public:
     UFUNCTION(CallInEditor, BlueprintCallable, Category = "Backend")
     void RequestZoneDataFromBackend();
 
+    UFUNCTION(CallInEditor, BlueprintCallable, Category = "Gameplay")
+    void MovePlayerToSpawnPoint();
+
 private:
     UPROPERTY()
     TObjectPtr<UPCGComponent> BaseEnvironmentPCGComponent;
@@ -162,6 +165,13 @@ private:
     // 생성된 액터들을 기억해뒀다가 다음 생성 전에 지우기 위한 액터 배열
     UPROPERTY()
     TArray<TObjectPtr<AActor>> SpawnedGameplayMarkers;
+
+    /*
+    * ApplyGameplayMarkers()에서 Spawn Area 마커를 만들었을 때
+    * 그 Actor를 따로 기억해두는 변수
+    */
+    UPROPERTY()
+    TObjectPtr<AActor> SpawnPointActor;
 
 private:
     void UpdateZoneBoundsFromBaseEnvironment();
