@@ -128,6 +128,9 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gameplay Marker")
     TSubclassOf<AActor> GoalPointClass;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gameplay")
+    TSubclassOf<AActor> EnemySpawnerClass;
+
     // 에디터에서 직접 바꿀 값들
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Zone Data")
     FZoneGenerationData CurrentZoneData;
@@ -172,6 +175,9 @@ private:
     */
     UPROPERTY()
     TObjectPtr<AActor> SpawnPointActor;
+
+    UPROPERTY()
+    TArray<TObjectPtr<AActor>> SpawnedEnemySpawners;
 
 private:
     void UpdateZoneBoundsFromBaseEnvironment();

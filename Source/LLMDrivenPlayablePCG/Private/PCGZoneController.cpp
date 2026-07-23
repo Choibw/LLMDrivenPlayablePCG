@@ -803,7 +803,18 @@ void APCGZoneController::ClearSpawnedGameplayMarkers()
     }
 
     SpawnedGameplayMarkers.Empty();
+
     SpawnPointActor = nullptr;
+
+    for (AActor* EnemySpawner : SpawnedEnemySpawners)
+    {
+        if (IsValid(EnemySpawner))
+        {
+            EnemySpawner->Destroy();
+        }
+    }
+
+    SpawnedEnemySpawners.Empty();
 }
 
 void APCGZoneController::ApplyGameplayMarkers()
@@ -847,31 +858,54 @@ void APCGZoneController::ApplyGameplayMarkers()
 
         FVector SpawnLocation = CurrentZoneData.ZoneCenter + FVector(LocalX, LocalY, 0.0f);
 
-        // 디버그 마커가 바닥에 묻히지 않도록 살짝 위로 올림
-        SpawnLocation.Z += 100.0f;
-
         FActorSpawnParameters SpawnParams;
         SpawnParams.Owner = this;
 
-        AActor* SpawnedMarker = World->SpawnActor<AActor>(
-            MarkerClass,
-            SpawnLocation,
-            FRotator::ZeroRotator,
-            SpawnParams
-        );
+        AActor* SpawnedMarker = nullptr;
 
-        if (IsValid(SpawnedMarker))
+        if (MarkerClass)
         {
-            SpawnedGameplayMarkers.Add(SpawnedMarker);
+            SpawnedMarker = World->SpawnActor<AActor>(
+                MarkerClass,
+                SpawnLocation,
+                FRotator::ZeroRotator,
+                SpawnParams
+            );
 
-            if (AreaData.AreaType == EZoneAreaType::Spawn)
+            if (IsValid(SpawnedMarker))
             {
-                SpawnPointActor = SpawnedMarker;
-            }
+                SpawnedGameplayMarkers.Add(SpawnedMarker);
 
-            UE_LOG(LogTemp, Log, TEXT("[GameplayMarker] Spawned marker. Type=%d Location=%s"),
-                static_cast<int32>(AreaData.AreaType),
-                *SpawnLocation.ToString());
+                if (AreaData.AreaType == EZoneAreaType::Spawn)
+                {
+                    SpawnPointActor = SpawnedMarker;
+                }
+
+                UE_LOG(LogTemp, Log, TEXT("[GameplayMarker] Spawned marker. Type=%d Location=%s"),
+                    static_cast<int32>(AreaData.AreaType),
+                    *SpawnLocation.ToString());
+            }
+        }
+
+        if (AreaData.AreaType == EZoneAreaType::Combat && EnemySpawnerClass)
+        {
+            FActorSpawnParameters EnemySpawnerSpawnParams;
+            EnemySpawnerSpawnParams.Owner = this;
+
+            AActor* SpawnedEnemySpawner = World->SpawnActor<AActor>(
+                EnemySpawnerClass,
+                SpawnLocation,
+                FRotator::ZeroRotator,
+                EnemySpawnerSpawnParams
+            );
+
+            if (IsValid(SpawnedEnemySpawner))
+            {
+                SpawnedEnemySpawners.Add(SpawnedEnemySpawner);
+
+                UE_LOG(LogTemp, Log, TEXT("[GameplayMarker] EnemySpawner spawned at Combat Area. Location=%s"),
+                    *SpawnLocation.ToString());
+            }
         }
     }
 }
