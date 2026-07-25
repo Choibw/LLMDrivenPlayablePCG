@@ -13,6 +13,9 @@ class UPCGComponent;
 class IHttpRequest;
 class IHttpResponse;
 
+class AZoneEnemySpawner;
+class AZoneGoalPoint;
+
 UENUM(BlueprintType)
 enum class EZonePathType : uint8
 {
@@ -177,6 +180,9 @@ private:
     TObjectPtr<AActor> SpawnPointActor;
 
     UPROPERTY()
+    TObjectPtr<AActor> GoalPointActor;
+
+    UPROPERTY()
     TArray<TObjectPtr<AActor>> SpawnedEnemySpawners;
 
 private:
@@ -208,4 +214,6 @@ private:
     void ClearSpawnedGameplayMarkers();
 
     void ApplyGameplayMarkers();
+
+    void HandleCombatAreaCleared(class AZoneEnemySpawner* ClearedSpawner);
 };

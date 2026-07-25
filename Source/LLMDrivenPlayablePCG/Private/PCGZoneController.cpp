@@ -19,6 +19,9 @@
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/Pawn.h"
 
+#include "ZoneEnemySpawner.h"
+#include "ZoneGoalPoint.h"
+
 // Sets default values
 APCGZoneController::APCGZoneController()
 {
@@ -805,6 +808,7 @@ void APCGZoneController::ClearSpawnedGameplayMarkers()
     SpawnedGameplayMarkers.Empty();
 
     SpawnPointActor = nullptr;
+    GoalPointActor = nullptr;
 
     for (AActor* EnemySpawner : SpawnedEnemySpawners)
     {
@@ -880,6 +884,10 @@ void APCGZoneController::ApplyGameplayMarkers()
                 {
                     SpawnPointActor = SpawnedMarker;
                 }
+                else if (AreaData.AreaType == EZoneAreaType::Goal)
+                {
+                    GoalPointActor = SpawnedMarker;
+                }
 
                 UE_LOG(LogTemp, Log, TEXT("[GameplayMarker] Spawned marker. Type=%d Location=%s"),
                     static_cast<int32>(AreaData.AreaType),
@@ -903,9 +911,41 @@ void APCGZoneController::ApplyGameplayMarkers()
             {
                 SpawnedEnemySpawners.Add(SpawnedEnemySpawner);
 
+                if (AZoneEnemySpawner* EnemySpawner = Cast<AZoneEnemySpawner>(SpawnedEnemySpawner))
+                {
+                    EnemySpawner->OnCombatAreaCleared.AddUObject(
+                        this,
+                        &APCGZoneController::HandleCombatAreaCleared
+                    );
+
+                    UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Bound combat clear event. Spawner=%s"),
+                        *EnemySpawner->GetName());
+                }
+                else
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] Spawned enemy spawner is not AZoneEnemySpawner."));
+                }
+
                 UE_LOG(LogTemp, Log, TEXT("[GameplayMarker] EnemySpawner spawned at Combat Area. Location=%s"),
                     *SpawnLocation.ToString());
             }
         }
     }
+}
+
+void APCGZoneController::HandleCombatAreaCleared(AZoneEnemySpawner* ClearedSpawner)
+{
+    UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Combat area cleared received. Spawner=%s"),
+        ClearedSpawner ? *ClearedSpawner->GetName() : TEXT("None"));
+
+    AZoneGoalPoint* GoalPoint = Cast<AZoneGoalPoint>(GoalPointActor);
+    if (!IsValid(GoalPoint))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] GoalPointActor is invalid. Cannot activate goal."));
+        return;
+    }
+
+    GoalPoint->ActivateGoal();
+
+    UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Goal activated after combat clear."));
 }

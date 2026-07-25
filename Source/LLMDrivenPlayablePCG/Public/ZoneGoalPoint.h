@@ -35,7 +35,7 @@ public:
     TObjectPtr<USphereComponent> GoalTrigger;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Goal")
-    bool bStartActive = true;
+    bool bStartActive = false;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Goal")
     bool bDeactivateAfterClear = true;
@@ -46,7 +46,7 @@ public:
 public:
     UFUNCTION(BlueprintCallable, Category = "Goal")
     void ActivateGoal();
-
+    
     UFUNCTION(BlueprintCallable, Category = "Goal")
     void DeactivateGoal();
 
