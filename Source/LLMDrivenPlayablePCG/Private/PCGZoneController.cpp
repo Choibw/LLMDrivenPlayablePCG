@@ -108,7 +108,8 @@ void APCGZoneController::ApplyBaseEnvironmentPCG()
     GraphInterface->SetGraphParameter(FName("GrassDensity"), Grass);
 
     BaseEnvironmentPCGComponent->Cleanup();
-    BaseEnvironmentPCGComponent->GenerateLocal(true);
+    BaseEnvironmentPCGComponent->DirtyGenerated(EPCGComponentDirtyFlag::All);
+    BaseEnvironmentPCGComponent->Generate(true);
 
     UE_LOG(
         LogTemp,
