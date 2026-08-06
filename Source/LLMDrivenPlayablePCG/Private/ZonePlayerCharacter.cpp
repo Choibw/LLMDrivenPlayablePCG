@@ -10,6 +10,10 @@
 #include "InputActionValue.h"
 #include "GameFramework/Controller.h"
 
+#include "ZoneEnemyBase.h"
+#include "DrawDebugHelpers.h"
+#include "Kismet/GameplayStatics.h"
+
 AZonePlayerCharacter::AZonePlayerCharacter()
 {
 	PrimaryActorTick.bCanEverTick = false;
@@ -92,5 +96,67 @@ void AZonePlayerCharacter::Look(const FInputActionValue& Value)
 
 void AZonePlayerCharacter::Attack()
 {
-	UE_LOG(LogTemp, Warning, TEXT("[ZonePlayerCharacter] Attack"));
+	PerformAttackTrace();
+}
+
+void AZonePlayerCharacter::PerformAttackTrace()
+{
+	AController* OwnerController = GetController();
+	if (!OwnerController)
+	{
+		return;
+	}
+
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	OwnerController->GetPlayerViewPoint(ViewLocation, ViewRotation);
+
+	const FVector TraceStart = ViewLocation;
+	const FVector TraceEnd = TraceStart + ViewRotation.Vector() * AttackRange;
+
+	FHitResult HitResult;
+	FCollisionQueryParams Params;
+	Params.AddIgnoredActor(this);
+
+	const bool bHit = GetWorld()->LineTraceSingleByChannel(
+		HitResult,
+		TraceStart,
+		TraceEnd,
+		ECC_Visibility,
+		Params
+	);
+
+	DrawDebugLine(
+		GetWorld(),
+		TraceStart,
+		TraceEnd,
+		bHit ? FColor::Green : FColor::Red,
+		false,
+		1.0f,
+		0,
+		2.0f
+	);
+
+	if (!bHit)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PlayerAttack] Miss."));
+		return;
+	}
+
+	AActor* HitActor = HitResult.GetActor();
+
+	UE_LOG(LogTemp, Warning, TEXT("[PlayerAttack] Hit Actor=%s"), *GetNameSafe(HitActor));
+
+	AZoneEnemyBase* HitEnemy = Cast<AZoneEnemyBase>(HitActor);
+	if (!HitEnemy)
+	{
+		return;
+	}
+
+	HitEnemy->ApplyDamage(AttackDamage);
+
+	UE_LOG(LogTemp, Warning, TEXT("[PlayerAttack] Enemy damaged. Target=%s Damage=%f"),
+		*GetNameSafe(HitEnemy),
+		AttackDamage
+	);
 }
