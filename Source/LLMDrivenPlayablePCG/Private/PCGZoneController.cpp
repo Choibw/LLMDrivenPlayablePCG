@@ -225,106 +225,100 @@ void APCGZoneController::ApplyAreaPCG()
 {
     const int32 AreaDataCount = CurrentZoneData.Areas.Num();
     const int32 AreaActorCount = AreaPCGActors.Num();
-    const int32 ApplyCount = FMath::Min(AreaDataCount, AreaActorCount);
 
-    if (ApplyCount <= 0)
+    if (AreaDataCount == 0 || AreaDataCount != AreaActorCount)
     {
         UE_LOG(
             LogTemp,
             Warning,
-            TEXT("[PCGZoneController] No area data or area PCG actors. AreaDataCount=%d, AreaActorCount=%d"),
+            TEXT("[PCGZoneController] Area count mismatch. Data=%d, Actors=%d"),
             AreaDataCount,
             AreaActorCount
         );
         return;
     }
 
-    // Area 반지름은 Zone의 짧은 축을 기준으로 계산한다.
-    const float BaseZoneLength = FMath::Min(CurrentZoneData.ZoneSize.X, CurrentZoneData.ZoneSize.Y);
+    // ApplyPathPCG()와 동일한 위치 변환 기준 사용
+    const float AreaPositionScale = 0.65f;
 
-    // 현재 프로토타입에서 Area BP의 기본 원형 반지름 기준값.
-    // 에디터에서 실제 Area BP 크기를 보면서 조정 가능.
+    const FVector2D AreaUsableSize(
+        CurrentZoneData.ZoneSize.X * AreaPositionScale,
+        CurrentZoneData.ZoneSize.Y * AreaPositionScale
+    );
+
+    // 반지름 계산은 기존 기준 유지
+    const float BaseZoneLength = FMath::Min(
+        CurrentZoneData.ZoneSize.X,
+        CurrentZoneData.ZoneSize.Y
+    );
+
     const float DefaultAreaRadius = 500.0f;
 
-    for (int32 i = 0; i < ApplyCount; ++i)
+    for (int32 i = 0; i < AreaDataCount; ++i)
     {
         AActor* AreaPCGActor = AreaPCGActors[i];
         const FZoneAreaData& AreaData = CurrentZoneData.Areas[i];
 
-        if (!AreaPCGActor)
-        {
-            UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] AreaPCGActor[%d] is null."), i);
-            continue;
-        }
-
-        // NormalizedCenter를 Zone 중심 기준 Local 좌표로 변환
-        const float LocalX = (AreaData.NormalizedCenter.X - 0.5f) * CurrentZoneData.ZoneSize.X;
-        const float LocalY = (AreaData.NormalizedCenter.Y - 0.5f) * CurrentZoneData.ZoneSize.Y;
-
-        // World 위치 계산
-        // Z는 현재 AreaPCGActor가 에디터에서 맞춰둔 높이를 유지한다.
-        const FVector CurrentActorLocation = AreaPCGActor->GetActorLocation();
-
-        const FVector AreaWorldLocation(
-            CurrentZoneData.ZoneCenter.X + LocalX,
-            CurrentZoneData.ZoneCenter.Y + LocalY,
-            CurrentActorLocation.Z
-        );
-
-        AreaPCGActor->SetActorLocation(AreaWorldLocation);
-
-        // NormalizedRadius를 실제 WorldRadius로 변환
-        const float WorldRadius = AreaData.NormalizedRadius * BaseZoneLength;
-
-        // Area BP의 기본 반지름 대비 스케일 계산
-        const float SafeDefaultAreaRadius = FMath::Max(DefaultAreaRadius, 1.0f);
-        const float AreaScale = WorldRadius / SafeDefaultAreaRadius;
-
-        AreaPCGActor->SetActorScale3D(FVector(AreaScale, AreaScale, 1.0f));
-
-        // Area 내부 PCGComponent 갱신
-        UPCGComponent* AreaPCGComponent = AreaPCGActor->FindComponentByClass<UPCGComponent>();
-
-        if (AreaPCGComponent)
-        {
-            AreaPCGComponent->Cleanup();
-            AreaPCGComponent->DirtyGenerated(EPCGComponentDirtyFlag::All);
-            AreaPCGComponent->Generate(true);
-        }
-        else
+        if (!IsValid(AreaPCGActor))
         {
             UE_LOG(
                 LogTemp,
                 Warning,
-                TEXT("[PCGZoneController] PCGComponent is not found in AreaPCGActor[%d]."),
+                TEXT("[PCGZoneController] AreaPCGActor[%d] is invalid."),
                 i
             );
+            continue;
         }
+
+        UPCGComponent* AreaPCGComponent =
+            AreaPCGActor->FindComponentByClass<UPCGComponent>();
+
+        if (!AreaPCGComponent)
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("[PCGZoneController] PCGComponent missing. Index=%d"),
+                i
+            );
+            continue;
+        }
+
+        const float LocalX =
+            (AreaData.NormalizedCenter.X - 0.5f) * AreaUsableSize.X;
+
+        const float LocalY =
+            (AreaData.NormalizedCenter.Y - 0.5f) * AreaUsableSize.Y;
+
+        // Z는 에디터에서 설정한 기존 높이 유지
+        const FVector AreaWorldLocation(
+            CurrentZoneData.ZoneCenter.X + LocalX,
+            CurrentZoneData.ZoneCenter.Y + LocalY,
+            AreaPCGActor->GetActorLocation().Z
+        );
+
+        const float WorldRadius =
+            AreaData.NormalizedRadius * BaseZoneLength;
+
+        const float AreaScale = WorldRadius / DefaultAreaRadius;
+
+        AreaPCGActor->SetActorLocation(AreaWorldLocation);
+        AreaPCGActor->SetActorScale3D(
+            FVector(AreaScale, AreaScale, 1.0f)
+        );
+
+        AreaPCGComponent->Cleanup();
+        AreaPCGComponent->DirtyGenerated(EPCGComponentDirtyFlag::All);
+        AreaPCGComponent->Generate(true);
 
         UE_LOG(
             LogTemp,
             Log,
-            TEXT("[PCGZoneController] Area PCG applied. Index=%d, Type=%d, NormalizedCenter=(%f, %f), WorldLocation=%s, NormalizedRadius=%f, WorldRadius=%f, Scale=%f"),
+            TEXT("[PCGZoneController] Area PCG applied. Index=%d, Type=%d, WorldLocation=%s, WorldRadius=%f"),
             i,
             static_cast<int32>(AreaData.AreaType),
-            AreaData.NormalizedCenter.X,
-            AreaData.NormalizedCenter.Y,
             *AreaWorldLocation.ToString(),
-            AreaData.NormalizedRadius,
-            WorldRadius,
-            AreaScale
-        );
-    }
-
-    if (AreaDataCount != AreaActorCount)
-    {
-        UE_LOG(
-            LogTemp,
-            Warning,
-            TEXT("[PCGZoneController] Area data count and actor count are different. AreaDataCount=%d, AreaActorCount=%d, Applied=%d"),
-            AreaDataCount,
-            AreaActorCount,
-            ApplyCount
+            WorldRadius
         );
     }
 }
@@ -335,39 +329,85 @@ void APCGZoneController::LoadSampleZoneJson()
     {
       "theme": "forest",
       "base_environment": {
-        "tree_density": 0.3,
-        "rock_density": 0.3,
-        "grass_density": 0.7
+        "tree_density": 0.12,
+        "rock_density": 0.17,
+        "grass_density": 0.29
       },
       "main_path": {
         "path_type": "main",
-        "path_width": 500,
+        "path_width": 535,
         "normalized_points": [
-          { "x": 0.05, "y": 0.60 },
-          { "x": 0.25, "y": 0.55 },
-          { "x": 0.55, "y": 0.40 },
-          { "x": 0.80, "y": 0.60 },
-          { "x": 0.95, "y": 0.50 }
+          {
+            "x": 0.714,
+            "y": 0.559
+          },
+          {
+            "x": 0.318,
+            "y": 0.635
+          },
+          {
+            "x": 0.635,
+            "y": 0.464
+          },
+          {
+            "x": 0.908,
+            "y": 0.864
+          },
+          {
+            "x": 0.392,
+            "y": 0.52
+          },
+          {
+            "x": 0.125,
+            "y": 0.246
+          }
         ]
       },
       "areas": [
         {
           "area_type": "spawn",
-          "normalized_center": { "x": 0.12, "y": 0.50 },
+          "normalized_center": {
+            "x": 0.714,
+            "y": 0.559
+          },
           "normalized_radius": 0.05,
           "detail_density": 0.2
         },
         {
           "area_type": "combat",
-          "normalized_center": { "x": 0.40, "y": 0.60 },
-          "normalized_radius": 0.10,
-          "detail_density": 0.6
+          "normalized_center": {
+            "x": 0.818,
+            "y": 0.732
+          },
+          "normalized_radius": 0.071,
+          "detail_density": 0.87
+        },
+        {
+          "area_type": "combat",
+          "normalized_center": {
+            "x": 0.426,
+            "y": 0.543
+          },
+          "normalized_radius": 0.037,
+          "detail_density": 0.91
+        },
+        {
+          "area_type": "combat",
+          "normalized_center": {
+            "x": 0.346,
+            "y": 0.473
+          },
+          "normalized_radius": 0.03,
+          "detail_density": 0.49
         },
         {
           "area_type": "goal",
-          "normalized_center": { "x": 0.80, "y": 0.47 },
+          "normalized_center": {
+            "x": 0.125,
+            "y": 0.246
+          },
           "normalized_radius": 0.06,
-          "detail_density": 0.4
+          "detail_density": 0.3
         }
       ]
     }
@@ -830,6 +870,14 @@ void APCGZoneController::ApplyGameplayMarkers()
         return;
     }
 
+    // 길 및 Area PCG와 동일한 위치 변환 기준
+    const float AreaPositionScale = 0.65f;
+
+    const FVector2D AreaUsableSize(
+        CurrentZoneData.ZoneSize.X * AreaPositionScale,
+        CurrentZoneData.ZoneSize.Y * AreaPositionScale
+    );
+
     for (const FZoneAreaData& AreaData : CurrentZoneData.Areas)
     {
         TSubclassOf<AActor> MarkerClass = nullptr;
@@ -858,44 +906,49 @@ void APCGZoneController::ApplyGameplayMarkers()
             continue;
         }
 
-        const float LocalX = (AreaData.NormalizedCenter.X - 0.5f) * CurrentZoneData.ZoneSize.X;
-        const float LocalY = (AreaData.NormalizedCenter.Y - 0.5f) * CurrentZoneData.ZoneSize.Y;
+        const float LocalX =
+            (AreaData.NormalizedCenter.X - 0.5f) * AreaUsableSize.X;
 
-        FVector SpawnLocation = CurrentZoneData.ZoneCenter + FVector(LocalX, LocalY, 0.0f);
+        const float LocalY =
+            (AreaData.NormalizedCenter.Y - 0.5f) * AreaUsableSize.Y;
+
+        // 마커 높이는 기존처럼 ZoneCenter.Z 사용
+        const FVector SpawnLocation =
+            CurrentZoneData.ZoneCenter + FVector(LocalX, LocalY, 0.0f);
 
         FActorSpawnParameters SpawnParams;
         SpawnParams.Owner = this;
 
-        AActor* SpawnedMarker = nullptr;
+        AActor* SpawnedMarker = World->SpawnActor<AActor>(
+            MarkerClass,
+            SpawnLocation,
+            FRotator::ZeroRotator,
+            SpawnParams
+        );
 
-        if (MarkerClass)
+        if (IsValid(SpawnedMarker))
         {
-            SpawnedMarker = World->SpawnActor<AActor>(
-                MarkerClass,
-                SpawnLocation,
-                FRotator::ZeroRotator,
-                SpawnParams
-            );
+            SpawnedGameplayMarkers.Add(SpawnedMarker);
 
-            if (IsValid(SpawnedMarker))
+            if (AreaData.AreaType == EZoneAreaType::Spawn)
             {
-                SpawnedGameplayMarkers.Add(SpawnedMarker);
-
-                if (AreaData.AreaType == EZoneAreaType::Spawn)
-                {
-                    SpawnPointActor = SpawnedMarker;
-                }
-                else if (AreaData.AreaType == EZoneAreaType::Goal)
-                {
-                    GoalPointActor = SpawnedMarker;
-                }
-
-                UE_LOG(LogTemp, Log, TEXT("[GameplayMarker] Spawned marker. Type=%d Location=%s"),
-                    static_cast<int32>(AreaData.AreaType),
-                    *SpawnLocation.ToString());
+                SpawnPointActor = SpawnedMarker;
             }
+            else if (AreaData.AreaType == EZoneAreaType::Goal)
+            {
+                GoalPointActor = SpawnedMarker;
+            }
+
+            UE_LOG(
+                LogTemp,
+                Log,
+                TEXT("[GameplayMarker] Spawned marker. Type=%d Location=%s"),
+                static_cast<int32>(AreaData.AreaType),
+                *SpawnLocation.ToString()
+            );
         }
 
+        // Combat 구역마다 적 스포너 생성
         if (AreaData.AreaType == EZoneAreaType::Combat && EnemySpawnerClass)
         {
             FActorSpawnParameters EnemySpawnerSpawnParams;
@@ -912,23 +965,38 @@ void APCGZoneController::ApplyGameplayMarkers()
             {
                 SpawnedEnemySpawners.Add(SpawnedEnemySpawner);
 
-                if (AZoneEnemySpawner* EnemySpawner = Cast<AZoneEnemySpawner>(SpawnedEnemySpawner))
+                AZoneEnemySpawner* EnemySpawner =
+                    Cast<AZoneEnemySpawner>(SpawnedEnemySpawner);
+
+                if (EnemySpawner)
                 {
                     EnemySpawner->OnCombatAreaCleared.AddUObject(
                         this,
                         &APCGZoneController::HandleCombatAreaCleared
                     );
 
-                    UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Bound combat clear event. Spawner=%s"),
-                        *EnemySpawner->GetName());
+                    UE_LOG(
+                        LogTemp,
+                        Log,
+                        TEXT("[PCGZoneController] Bound combat clear event. Spawner=%s"),
+                        *EnemySpawner->GetName()
+                    );
                 }
                 else
                 {
-                    UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] Spawned enemy spawner is not AZoneEnemySpawner."));
+                    UE_LOG(
+                        LogTemp,
+                        Warning,
+                        TEXT("[PCGZoneController] Spawned enemy spawner is not AZoneEnemySpawner.")
+                    );
                 }
 
-                UE_LOG(LogTemp, Log, TEXT("[GameplayMarker] EnemySpawner spawned at Combat Area. Location=%s"),
-                    *SpawnLocation.ToString());
+                UE_LOG(
+                    LogTemp,
+                    Log,
+                    TEXT("[GameplayMarker] EnemySpawner spawned at Combat Area. Location=%s"),
+                    *SpawnLocation.ToString()
+                );
             }
         }
     }
