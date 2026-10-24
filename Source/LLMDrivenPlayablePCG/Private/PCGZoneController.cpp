@@ -326,91 +326,82 @@ void APCGZoneController::ApplyAreaPCG()
 void APCGZoneController::LoadSampleZoneJson()
 {
     const FString SampleJson = TEXT(R"(
+   {
+  "theme": "forest",
+  "base_environment": {
+    "tree_density": 0.1,
+    "rock_density": 0.1,
+    "grass_density": 0.3
+  },
+  "main_path": {
+    "path_type": "main",
+    "path_width": 500,
+    "normalized_points": [
+      {
+        "x": 0.15,
+        "y": 0.78
+      },
+      {
+        "x": 0.22,
+        "y": 0.65
+      },
+      {
+        "x": 0.38,
+        "y": 0.52
+      },
+      {
+        "x": 0.55,
+        "y": 0.61
+      },
+      {
+        "x": 0.72,
+        "y": 0.48
+      },
+      {
+        "x": 0.85,
+        "y": 0.58
+      }
+    ]
+  },
+  "areas": [
     {
-      "theme": "forest",
-      "base_environment": {
-        "tree_density": 0.12,
-        "rock_density": 0.17,
-        "grass_density": 0.29
+      "area_type": "spawn",
+      "normalized_center": {
+        "x": 0.15,
+        "y": 0.78
       },
-      "main_path": {
-        "path_type": "main",
-        "path_width": 535,
-        "normalized_points": [
-          {
-            "x": 0.714,
-            "y": 0.559
-          },
-          {
-            "x": 0.318,
-            "y": 0.635
-          },
-          {
-            "x": 0.635,
-            "y": 0.464
-          },
-          {
-            "x": 0.908,
-            "y": 0.864
-          },
-          {
-            "x": 0.392,
-            "y": 0.52
-          },
-          {
-            "x": 0.125,
-            "y": 0.246
-          }
-        ]
+      "normalized_radius": 0.05,
+      "detail_density": 0.2
+    },
+    {
+      "area_type": "combat",
+      "normalized_center": {
+        "x": 0.336,
+        "y": 0.671
       },
-      "areas": [
-        {
-          "area_type": "spawn",
-          "normalized_center": {
-            "x": 0.714,
-            "y": 0.559
-          },
-          "normalized_radius": 0.05,
-          "detail_density": 0.2
-        },
-        {
-          "area_type": "combat",
-          "normalized_center": {
-            "x": 0.818,
-            "y": 0.732
-          },
-          "normalized_radius": 0.071,
-          "detail_density": 0.87
-        },
-        {
-          "area_type": "combat",
-          "normalized_center": {
-            "x": 0.426,
-            "y": 0.543
-          },
-          "normalized_radius": 0.037,
-          "detail_density": 0.91
-        },
-        {
-          "area_type": "combat",
-          "normalized_center": {
-            "x": 0.346,
-            "y": 0.473
-          },
-          "normalized_radius": 0.03,
-          "detail_density": 0.49
-        },
-        {
-          "area_type": "goal",
-          "normalized_center": {
-            "x": 0.125,
-            "y": 0.246
-          },
-          "normalized_radius": 0.06,
-          "detail_density": 0.3
-        }
-      ]
+      "normalized_radius": 0.06,
+      "detail_density": 0.4
+    },
+    {
+      "area_type": "combat",
+      "normalized_center": {
+        "x": 0.77,
+        "y": 0.484
+      },
+      "normalized_radius": 0.06,
+      "detail_density": 0.4
+    },
+    {
+      "area_type": "goal",
+      "normalized_center": {
+        "x": 0.85,
+        "y": 0.58
+      },
+      "normalized_radius": 0.05,
+      "detail_density": 0.3
     }
+  ]
+}
     )");
 
     if (ApplyZoneJsonString(SampleJson))
@@ -838,6 +829,27 @@ void APCGZoneController::OnZoneDataResponseReceived(FHttpRequestPtr Request, FHt
 
 void APCGZoneController::ClearSpawnedGameplayMarkers()
 {
+    // 이전 스포너의 전투 완료 이벤트 연결 해제
+    for (AActor* SpawnerActor : SpawnedEnemySpawners)
+    {
+        if (IsValid(SpawnerActor))
+        {
+            AZoneEnemySpawner* EnemySpawner =
+                Cast<AZoneEnemySpawner>(SpawnerActor);
+
+            if (EnemySpawner)
+            {
+                EnemySpawner->OnCombatAreaCleared.RemoveAll(this);
+            }
+        }
+    }
+
+    // 이전 Zone의 전투 진행 상태 초기화
+    ExpectedCombatAreaCount = 0;
+    RegisteredCombatSpawners.Empty();
+    ClearedCombatSpawners.Empty();
+
+    // 기존 게임플레이 마커 제거
     for (AActor* Marker : SpawnedGameplayMarkers)
     {
         if (IsValid(Marker))
@@ -851,11 +863,13 @@ void APCGZoneController::ClearSpawnedGameplayMarkers()
     SpawnPointActor = nullptr;
     GoalPointActor = nullptr;
 
-    for (AActor* EnemySpawner : SpawnedEnemySpawners)
+    // 기존 스포너 제거
+    // 스포너의 EndPlay()에서 자신이 생성한 적도 정리한다.
+    for (AActor* SpawnerActor : SpawnedEnemySpawners)
     {
-        if (IsValid(EnemySpawner))
+        if (IsValid(SpawnerActor))
         {
-            EnemySpawner->Destroy();
+            SpawnerActor->Destroy();
         }
     }
 
@@ -869,6 +883,24 @@ void APCGZoneController::ApplyGameplayMarkers()
     {
         return;
     }
+
+    // JSON에서 요구하는 전체 Combat 구역 수 계산
+    ExpectedCombatAreaCount = 0;
+
+    for (const FZoneAreaData& AreaData : CurrentZoneData.Areas)
+    {
+        if (AreaData.AreaType == EZoneAreaType::Combat)
+        {
+            ++ExpectedCombatAreaCount;
+        }
+    }
+
+    UE_LOG(
+        LogTemp,
+        Log,
+        TEXT("[PCGZoneController] Expected Combat Areas=%d"),
+        ExpectedCombatAreaCount
+    );
 
     // 길 및 Area PCG와 동일한 위치 변환 기준
     const float AreaPositionScale = 0.65f;
@@ -937,6 +969,21 @@ void APCGZoneController::ApplyGameplayMarkers()
             else if (AreaData.AreaType == EZoneAreaType::Goal)
             {
                 GoalPointActor = SpawnedMarker;
+
+                AZoneGoalPoint* GoalPoint = Cast<AZoneGoalPoint>(GoalPointActor);
+
+                if (IsValid(GoalPoint))
+                {
+                    GoalPoint->DeactivateGoal();
+                }
+                else
+                {
+                    UE_LOG(
+                        LogTemp,
+                        Warning,
+                        TEXT("[PCGZoneController] GoalPointClass must derive from AZoneGoalPoint.")
+                    );
+                }
             }
 
             UE_LOG(
@@ -970,6 +1017,16 @@ void APCGZoneController::ApplyGameplayMarkers()
 
                 if (EnemySpawner)
                 {
+                    RegisteredCombatSpawners.Add(EnemySpawner);
+
+                    UE_LOG(
+                        LogTemp,
+                        Log,
+                        TEXT("[PCGZoneController] Combat spawner registered. Count=%d / Expected=%d"),
+                        RegisteredCombatSpawners.Num(),
+                        ExpectedCombatAreaCount
+                    );
+
                     EnemySpawner->OnCombatAreaCleared.AddUObject(
                         this,
                         &APCGZoneController::HandleCombatAreaCleared
@@ -1000,21 +1057,87 @@ void APCGZoneController::ApplyGameplayMarkers()
             }
         }
     }
+
+    UpdateGoalActivation();
 }
 
 void APCGZoneController::HandleCombatAreaCleared(AZoneEnemySpawner* ClearedSpawner)
 {
-    UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Combat area cleared received. Spawner=%s"),
-        ClearedSpawner ? *ClearedSpawner->GetName() : TEXT("None"));
+    // 현재 Zone에 정상 등록된 스포너인지 확인
+    if (!IsValid(ClearedSpawner) ||
+        !RegisteredCombatSpawners.Contains(ClearedSpawner))
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[PCGZoneController] Ignored clear event from unregistered spawner.")
+        );
+        return;
+    }
+
+    // 같은 스포너의 완료 이벤트는 한 번만 처리
+    if (ClearedCombatSpawners.Contains(ClearedSpawner))
+    {
+        return;
+    }
+
+    ClearedCombatSpawners.Add(ClearedSpawner);
+
+    UE_LOG(
+        LogTemp,
+        Log,
+        TEXT("[PCGZoneController] Combat progress: %d / %d. Cleared=%s"),
+        ClearedCombatSpawners.Num(),
+        ExpectedCombatAreaCount,
+        *ClearedSpawner->GetName()
+    );
+
+    UpdateGoalActivation();
+}
+
+void APCGZoneController::UpdateGoalActivation()
+{
+    // JSON에서 요구한 수만큼 스포너가 등록되어야 한다.
+    if (RegisteredCombatSpawners.Num() != ExpectedCombatAreaCount)
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[PCGZoneController] Combat registration mismatch. Registered=%d Expected=%d"),
+            RegisteredCombatSpawners.Num(),
+            ExpectedCombatAreaCount
+        );
+        return;
+    }
+
+    // 모든 전투 구역을 완료하기 전에는 Goal을 열지 않는다.
+    if (ClearedCombatSpawners.Num() != ExpectedCombatAreaCount)
+    {
+        return;
+    }
 
     AZoneGoalPoint* GoalPoint = Cast<AZoneGoalPoint>(GoalPointActor);
+
     if (!IsValid(GoalPoint))
     {
-        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] GoalPointActor is invalid. Cannot activate goal."));
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[PCGZoneController] GoalPointActor is invalid.")
+        );
+        return;
+    }
+
+    if (GoalPoint->IsGoalActive())
+    {
         return;
     }
 
     GoalPoint->ActivateGoal();
 
-    UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Goal activated after combat clear."));
+    UE_LOG(
+        LogTemp,
+        Log,
+        TEXT("[PCGZoneController] All combat areas cleared. Goal activated.")
+    );
 }

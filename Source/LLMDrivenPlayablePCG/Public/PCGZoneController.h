@@ -185,6 +185,18 @@ private:
     UPROPERTY()
     TArray<TObjectPtr<AActor>> SpawnedEnemySpawners;
 
+    // 현재 JSON에서 요구하는 전체 Combat 구역 수
+    UPROPERTY(VisibleAnywhere, Category = "Gameplay|Combat")
+    int32 ExpectedCombatAreaCount = 0;
+
+    // 생성과 타입 확인에 성공하여 완료 이벤트를 추적하는 스포너
+    UPROPERTY()
+    TSet<TObjectPtr<AZoneEnemySpawner>> RegisteredCombatSpawners;
+
+    // 완료한 스포너를 기록하여 중복 완료 집계 방지
+    UPROPERTY()
+    TSet<TObjectPtr<AZoneEnemySpawner>> ClearedCombatSpawners;
+
 private:
     void UpdateZoneBoundsFromBaseEnvironment();
 
@@ -216,4 +228,7 @@ private:
     void ApplyGameplayMarkers();
 
     void HandleCombatAreaCleared(class AZoneEnemySpawner* ClearedSpawner);
+
+    // 전체 전투 완료 여부를 확인하고 Goal 활성화
+    void UpdateGoalActivation();
 };
