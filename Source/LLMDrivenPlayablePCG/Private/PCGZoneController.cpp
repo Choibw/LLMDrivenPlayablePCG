@@ -223,22 +223,16 @@ void APCGZoneController::ApplyPathPCG()
 
 void APCGZoneController::ApplyAreaPCG()
 {
-    const int32 AreaDataCount = CurrentZoneData.Areas.Num();
-    const int32 AreaActorCount = AreaPCGActors.Num();
-
-    if (AreaDataCount == 0 || AreaDataCount != AreaActorCount)
+    UWorld* World = GetWorld();
+    if (!World)
     {
-        UE_LOG(
-            LogTemp,
-            Warning,
-            TEXT("[PCGZoneController] Area count mismatch. Data=%d, Actors=%d"),
-            AreaDataCount,
-            AreaActorCount
-        );
         return;
     }
 
-    // ApplyPathPCG()와 동일한 위치 변환 기준 사용
+    // 이전에 자동 생성했던 Area Actor와 PCG 결과 정리
+    ClearSpawnedAreaPCGActors();
+
+    // 경로·게임플레이 마커와 동일한 XY 좌표 변환 기준
     const float AreaPositionScale = 0.65f;
 
     const FVector2D AreaUsableSize(
@@ -246,7 +240,6 @@ void APCGZoneController::ApplyAreaPCG()
         CurrentZoneData.ZoneSize.Y * AreaPositionScale
     );
 
-    // 반지름 계산은 기존 기준 유지
     const float BaseZoneLength = FMath::Min(
         CurrentZoneData.ZoneSize.X,
         CurrentZoneData.ZoneSize.Y
@@ -254,73 +247,152 @@ void APCGZoneController::ApplyAreaPCG()
 
     const float DefaultAreaRadius = 500.0f;
 
-    for (int32 i = 0; i < AreaDataCount; ++i)
+    for (int32 i = 0; i < CurrentZoneData.Areas.Num(); ++i)
     {
-        AActor* AreaPCGActor = AreaPCGActors[i];
         const FZoneAreaData& AreaData = CurrentZoneData.Areas[i];
 
-        if (!IsValid(AreaPCGActor))
+        // 구역 유형에 맞는 BP 클래스 선택
+        TSubclassOf<AActor> AreaClass = nullptr;
+
+        switch (AreaData.AreaType)
         {
+        case EZoneAreaType::Spawn:
+            AreaClass = SpawnAreaPCGClass;
+            break;
+
+        case EZoneAreaType::Combat:
+            AreaClass = CombatAreaPCGClass;
+            break;
+
+        case EZoneAreaType::Goal:
+            AreaClass = GoalAreaPCGClass;
+            break;
+
+        default:
             UE_LOG(
                 LogTemp,
                 Warning,
-                TEXT("[PCGZoneController] AreaPCGActor[%d] is invalid."),
-                i
+                TEXT("[PCGZoneController] Unsupported Area PCG type. Index=%d Type=%d"),
+                i,
+                static_cast<int32>(AreaData.AreaType)
             );
             continue;
         }
 
-        UPCGComponent* AreaPCGComponent =
-            AreaPCGActor->FindComponentByClass<UPCGComponent>();
-
-        if (!AreaPCGComponent)
+        if (!AreaClass)
         {
             UE_LOG(
                 LogTemp,
                 Warning,
-                TEXT("[PCGZoneController] PCGComponent missing. Index=%d"),
-                i
+                TEXT("[PCGZoneController] Area PCG class is not set. Index=%d Type=%d"),
+                i,
+                static_cast<int32>(AreaData.AreaType)
             );
             continue;
         }
 
+        // 정규화 좌표 → 월드 위치
         const float LocalX =
             (AreaData.NormalizedCenter.X - 0.5f) * AreaUsableSize.X;
 
         const float LocalY =
             (AreaData.NormalizedCenter.Y - 0.5f) * AreaUsableSize.Y;
 
-        // Z는 에디터에서 설정한 기존 높이 유지
-        const FVector AreaWorldLocation(
-            CurrentZoneData.ZoneCenter.X + LocalX,
-            CurrentZoneData.ZoneCenter.Y + LocalY,
-            AreaPCGActor->GetActorLocation().Z
-        );
+        const FVector AreaWorldLocation =
+            CurrentZoneData.ZoneCenter + FVector(LocalX, LocalY, 0.0f);
 
+        // 정규화 반지름 → Actor의 XY 스케일
         const float WorldRadius =
             AreaData.NormalizedRadius * BaseZoneLength;
 
         const float AreaScale = WorldRadius / DefaultAreaRadius;
 
-        AreaPCGActor->SetActorLocation(AreaWorldLocation);
-        AreaPCGActor->SetActorScale3D(
+        const FTransform SpawnTransform(
+            FRotator::ZeroRotator,
+            AreaWorldLocation,
             FVector(AreaScale, AreaScale, 1.0f)
         );
 
-        AreaPCGComponent->Cleanup();
-        AreaPCGComponent->DirtyGenerated(EPCGComponentDirtyFlag::All);
-        AreaPCGComponent->Generate(true);
+        FActorSpawnParameters SpawnParams;
+        SpawnParams.Owner = this;
+        SpawnParams.SpawnCollisionHandlingOverride =
+            ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+        AActor* AreaActor = World->SpawnActor<AActor>(
+            AreaClass,
+            SpawnTransform,
+            SpawnParams
+        );
+
+        if (!IsValid(AreaActor))
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("[PCGZoneController] Failed to spawn Area PCG Actor. Index=%d"),
+                i
+            );
+            continue;
+        }
+
+        // 다음 재생성 시 정리할 수 있도록 기록
+        SpawnedAreaPCGActors.Add(AreaActor);
+
+        UPCGComponent* AreaPCGComponent =
+            AreaActor->FindComponentByClass<UPCGComponent>();
+
+        if (AreaPCGComponent)
+        {
+            AreaPCGComponent->Cleanup();
+            AreaPCGComponent->DirtyGenerated(EPCGComponentDirtyFlag::All);
+            AreaPCGComponent->Generate(true);
+        }
+        else
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("[PCGZoneController] PCGComponent missing in spawned Area Actor. Index=%d Actor=%s"),
+                i,
+                *AreaActor->GetName()
+            );
+        }
 
         UE_LOG(
             LogTemp,
             Log,
-            TEXT("[PCGZoneController] Area PCG applied. Index=%d, Type=%d, WorldLocation=%s, WorldRadius=%f"),
+            TEXT("[PCGZoneController] Area PCG Actor spawned. Index=%d Type=%d Location=%s Radius=%f Scale=%f"),
             i,
             static_cast<int32>(AreaData.AreaType),
             *AreaWorldLocation.ToString(),
-            WorldRadius
+            WorldRadius,
+            AreaScale
         );
     }
+}
+
+void APCGZoneController::ClearSpawnedAreaPCGActors()
+{
+    for (AActor* AreaActor : SpawnedAreaPCGActors)
+    {
+        if (!IsValid(AreaActor))
+        {
+            continue;
+        }
+
+        // PCG가 생성한 결과물을 먼저 정리
+        UPCGComponent* PCGComponent =
+            AreaActor->FindComponentByClass<UPCGComponent>();
+
+        if (PCGComponent)
+        {
+            PCGComponent->Cleanup();
+        }
+
+        AreaActor->Destroy();
+    }
+
+    SpawnedAreaPCGActors.Empty();
 }
 
 void APCGZoneController::LoadSampleZoneJson()
@@ -390,6 +462,15 @@ void APCGZoneController::LoadSampleZoneJson()
       },
       "normalized_radius": 0.06,
       "detail_density": 0.4
+    },
+    {
+      "area_type": "combat",
+      "normalized_center": {
+        "x": 0.55,
+        "y": 0.61
+      },
+      "normalized_radius": 0.06,
+      "detail_density": 0.6
     },
     {
       "area_type": "goal",

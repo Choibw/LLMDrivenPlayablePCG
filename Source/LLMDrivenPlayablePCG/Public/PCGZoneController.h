@@ -119,8 +119,17 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PCG")
     TObjectPtr<AActor> PathPCGActor;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Area")
-    TArray<TObjectPtr<AActor>> AreaPCGActors;
+    // Spawn 구역 환경을 생성할 Area PCG BP 클래스
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Area|Classes")
+    TSubclassOf<AActor> SpawnAreaPCGClass;
+
+    // Combat 구역 환경을 생성할 Area PCG BP 클래스
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Area|Classes")
+    TSubclassOf<AActor> CombatAreaPCGClass;
+
+    // Goal 구역 환경을 생성할 Area PCG BP 클래스
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Area|Classes")
+    TSubclassOf<AActor> GoalAreaPCGClass;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gameplay Marker")
     TSubclassOf<AActor> SpawnPointClass;
@@ -137,6 +146,10 @@ public:
     // 에디터에서 직접 바꿀 값들
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Zone Data")
     FZoneGenerationData CurrentZoneData;
+
+    // 경로와 게임플레이 마커가 사용하는 기준 높이
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Zone Generation")
+    float ZoneBaseHeight = 407.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Backend")
     FString BackendUrl = TEXT("http://127.0.0.1:8000/generate-zone");
@@ -185,6 +198,10 @@ private:
     UPROPERTY()
     TArray<TObjectPtr<AActor>> SpawnedEnemySpawners;
 
+    // 자동 생성한 Area PCG Actor들을 재생성 시 정리하기 위한 배열
+    UPROPERTY(Transient)
+    TArray<TObjectPtr<AActor>> SpawnedAreaPCGActors;
+
     // 현재 JSON에서 요구하는 전체 Combat 구역 수
     UPROPERTY(VisibleAnywhere, Category = "Gameplay|Combat")
     int32 ExpectedCombatAreaCount = 0;
@@ -208,6 +225,8 @@ private:
     void ApplyPathPCG();
 
     void ApplyAreaPCG();
+
+    void ClearSpawnedAreaPCGActors();
 
     bool ApplyZoneJsonString(const FString& JsonString);
 
