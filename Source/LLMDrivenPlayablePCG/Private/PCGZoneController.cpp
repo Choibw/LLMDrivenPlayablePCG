@@ -42,29 +42,36 @@ void APCGZoneController::GenerateZone()
 
 void APCGZoneController::UpdateZoneBoundsFromBaseEnvironment()
 {
-    if (!BaseEnvironmentPCGActor)
+    if (!IsValid(BaseEnvironmentPCGActor))
     {
-        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] BaseEnvironmentPCGActor is not set."));
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[PCGZoneController] BaseEnvironmentPCGActor is not set.")
+        );
         return;
     }
 
     FVector BoundsOrigin;
     FVector BoundsExtent;
 
-    BaseEnvironmentPCGActor->GetActorBounds(false, BoundsOrigin, BoundsExtent);
+    BaseEnvironmentPCGActor->GetActorBounds(
+        false,
+        BoundsOrigin,
+        BoundsExtent
+    );
 
     CurrentZoneData.ZoneSize = FVector2D(
         BoundsExtent.X * 2.0f,
         BoundsExtent.Y * 2.0f
     );
 
-    if (!PathPCGActor)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] PathPCGActor is not set."));
-        return;
-    }
-
-    CurrentZoneData.ZoneCenter = FVector(BoundsOrigin.X, BoundsOrigin.Y, PathPCGActor->GetActorLocation().Z);
+    // XY는 기본 환경 Bounds, Z는 독립적인 설정값 사용
+    CurrentZoneData.ZoneCenter = FVector(
+        BoundsOrigin.X,
+        BoundsOrigin.Y,
+        ZoneBaseHeight
+    );
 
     UE_LOG(
         LogTemp,
@@ -123,102 +130,186 @@ void APCGZoneController::ApplyBaseEnvironmentPCG()
 
 void APCGZoneController::ApplyPathPCG()
 {
-    if (!PathPCGActor)
+    UWorld* World = GetWorld();
+    if (!World)
     {
-        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] PathPCGActor is not set."));
         return;
     }
 
-    const TArray<FVector2D>& NormalizedPoints = CurrentZoneData.MainPath.NormalizedPathPoints;
-
-    // 최소 두개는 있어야함
-    if (NormalizedPoints.Num() < 2)
+    if (!PathPCGClass)
     {
         UE_LOG(
             LogTemp,
             Warning,
-            TEXT("[PCGZoneController] Path requires at least 2 normalized points. Current Count=%d"),
-            NormalizedPoints.Num()
+            TEXT("[PCGZoneController] PathPCGClass is not set.")
         );
         return;
     }
 
-    // 현재 프로토타입에서는 Z축은 에디터에서 맞춘 PathPCGActor의 기존 Z를 사용한다.
-    PathPCGActor->SetActorLocation(CurrentZoneData.ZoneCenter);
+    // 이전에 자동 생성한 경로와 PCG 결과 정리
+    ClearSpawnedPathPCGActors();
 
-    USplineComponent* PathSplineComponent = PathPCGActor->FindComponentByClass<USplineComponent>();
+    const TArray<FZonePathData>& Paths = CurrentZoneData.Paths;
 
-    if (!PathSplineComponent)
+    if (Paths.Num() == 0)
     {
-        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] SplineComponent is not found in PathPCGActor."));
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[PCGZoneController] No path data.")
+        );
         return;
     }
 
-    PathSplineComponent->ClearSplinePoints(false);
-
-    // Normalized 좌표를 Zone 기준 Local 좌표로 변환해서 Spline Point 추가
-    // 현재는 ActorBounds가 생성된 에셋까지 포함해 실제 PCG Volume보다 커질 수 있으므로,
-    // 길은 Zone 전체가 아니라 내부 영역만 사용하도록 축소된 PathUsableSize를 기준으로 생성한다.
-    const float PathAreaScale = 0.65f;
+    // Area·게임플레이 마커와 동일한 XY 변환 기준
+    const float PathAreaScale = 0.9f;
 
     const FVector2D PathUsableSize(
         CurrentZoneData.ZoneSize.X * PathAreaScale,
         CurrentZoneData.ZoneSize.Y * PathAreaScale
     );
 
-    for (const FVector2D& NormalizedPoint : NormalizedPoints)
+    for (int32 PathIndex = 0; PathIndex < Paths.Num(); ++PathIndex)
     {
-        const float LocalX = (NormalizedPoint.X - 0.5f) * PathUsableSize.X;
-        const float LocalY = (NormalizedPoint.Y - 0.5f) * PathUsableSize.Y;
+        const FZonePathData& PathData = Paths[PathIndex];
 
-        // 현재는 Z 자동 보정 없이, PathPCGActor 기준 Local Z = 0으로 둔다.
-        const FVector LocalPoint(LocalX, LocalY, 0.0f);
+        if (PathData.NormalizedPathPoints.Num() < 2)
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("[PCGZoneController] Path requires at least 2 points. Index=%d"),
+                PathIndex
+            );
+            continue;
+        }
+
+        const FTransform SpawnTransform(
+            FRotator::ZeroRotator,
+            CurrentZoneData.ZoneCenter,
+            FVector::OneVector
+        );
+
+        FActorSpawnParameters SpawnParams;
+        SpawnParams.Owner = this;
+        SpawnParams.SpawnCollisionHandlingOverride =
+            ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+        AActor* PathActor = World->SpawnActor<AActor>(
+            PathPCGClass,
+            SpawnTransform,
+            SpawnParams
+        );
+
+        if (!IsValid(PathActor))
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("[PCGZoneController] Failed to spawn Path Actor. Index=%d"),
+                PathIndex
+            );
+            continue;
+        }
+
+        USplineComponent* SplineComponent =
+            PathActor->FindComponentByClass<USplineComponent>();
+
+        UPCGComponent* PCGComponent =
+            PathActor->FindComponentByClass<UPCGComponent>();
+
+        if (!SplineComponent || !PCGComponent)
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("[PCGZoneController] Path Actor requires Spline and PCG components. Index=%d Actor=%s"),
+                PathIndex,
+                *PathActor->GetName()
+            );
+
+            if (PCGComponent)
+            {
+                PCGComponent->Cleanup();
+            }
+
+            PathActor->Destroy();
+            continue;
+        }
+
+        SpawnedPathPCGActors.Add(PathActor);
+
+        // BP의 기본 Spline으로 생성된 결과 정리
+        //PCGComponent->Cleanup();
+        SplineComponent->ClearSplinePoints(false);
+
+        for (const FVector2D& Point : PathData.NormalizedPathPoints)
+        {
+            const float LocalX =
+                (Point.X - 0.5f) * PathUsableSize.X;
+
+            const float LocalY =
+                (Point.Y - 0.5f) * PathUsableSize.Y;
+
+            const FVector WorldPoint =
+                CurrentZoneData.ZoneCenter
+                + FVector(LocalX, LocalY, 0.0f);
+
+            // 월드 좌표로 전달하여 SplineComponent의 상대 변환에 대응
+            SplineComponent->AddSplinePoint(
+                WorldPoint,
+                ESplineCoordinateSpace::World,
+                false
+            );
+        }
+
+        SplineComponent->UpdateSpline();
+
+        PCGComponent->DirtyGenerated(EPCGComponentDirtyFlag::All);
+        PCGComponent->Generate(true);
 
         UE_LOG(
             LogTemp,
             Log,
-            TEXT("[PCGZoneController] PathPoint Normalized=(%f, %f), Local=(%f, %f), PathUsableSize=(%f, %f)"),
-            NormalizedPoint.X,
-            NormalizedPoint.Y,
-            LocalX,
-            LocalY,
-            PathUsableSize.X,
-            PathUsableSize.Y
-        );
-
-        PathSplineComponent->AddSplinePoint(
-            LocalPoint,
-            ESplineCoordinateSpace::Local,
-            false
+            TEXT("[PCGZoneController] Path PCG Actor spawned. Index=%d Type=%d PointCount=%d Width=%f Actor=%s"),
+            PathIndex,
+            static_cast<int32>(PathData.PathType),
+            PathData.NormalizedPathPoints.Num(),
+            PathData.PathWidth,
+            *PathActor->GetName()
         );
     }
-
-    // SplineComponent 내부 곡선 데이터 갱신
-    PathSplineComponent->UpdateSpline();
-
-    UPCGComponent* PathPCGComponent = PathPCGActor->FindComponentByClass<UPCGComponent>();
-
-    if (!PathPCGComponent)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] PCGComponent is not found in PathPCGActor."));
-        return;
-    }
-
-    // Spline 입력 변경을 PCG가 다시 반영하도록 생성 결과를 Dirty 처리 후 재생성
-    PathPCGComponent->Cleanup();
-    PathPCGComponent->DirtyGenerated(EPCGComponentDirtyFlag::All);
-    PathPCGComponent->Generate(true);
 
     UE_LOG(
         LogTemp,
         Log,
-        TEXT("[PCGZoneController] Path PCG applied. Type=%d, Width=%f, PointCount=%d, ZoneCenter=%s, ZoneSize=%s"),
-        static_cast<int32>(CurrentZoneData.MainPath.PathType),
-        CurrentZoneData.MainPath.PathWidth,
-        NormalizedPoints.Num(),
-        *CurrentZoneData.ZoneCenter.ToString(),
-        *CurrentZoneData.ZoneSize.ToString()
+        TEXT("[PCGZoneController] Path generation finished. Created=%d Requested=%d"),
+        SpawnedPathPCGActors.Num(),
+        Paths.Num()
     );
+}
+
+void APCGZoneController::ClearSpawnedPathPCGActors()
+{
+    for (AActor* PathActor : SpawnedPathPCGActors)
+    {
+        if (!IsValid(PathActor))
+        {
+            continue;
+        }
+
+        UPCGComponent* PCGComponent =
+            PathActor->FindComponentByClass<UPCGComponent>();
+
+        if (PCGComponent)
+        {
+            PCGComponent->Cleanup();
+        }
+
+        PathActor->Destroy();
+    }
+
+    SpawnedPathPCGActors.Empty();
 }
 
 void APCGZoneController::ApplyAreaPCG()
@@ -233,7 +324,7 @@ void APCGZoneController::ApplyAreaPCG()
     ClearSpawnedAreaPCGActors();
 
     // 경로·게임플레이 마커와 동일한 XY 좌표 변환 기준
-    const float AreaPositionScale = 0.65f;
+    const float AreaPositionScale = 0.9f;
 
     const FVector2D AreaUsableSize(
         CurrentZoneData.ZoneSize.X * AreaPositionScale,
@@ -343,7 +434,7 @@ void APCGZoneController::ApplyAreaPCG()
 
         if (AreaPCGComponent)
         {
-            AreaPCGComponent->Cleanup();
+            //AreaPCGComponent->Cleanup();
             AreaPCGComponent->DirtyGenerated(EPCGComponentDirtyFlag::All);
             AreaPCGComponent->Generate(true);
         }
@@ -373,6 +464,14 @@ void APCGZoneController::ApplyAreaPCG()
 
 void APCGZoneController::ClearSpawnedAreaPCGActors()
 {
+    UE_LOG(
+        LogTemp,
+        Log,
+        TEXT("[AreaCleanup] Tracked=%d GameWorld=%s"),
+        SpawnedAreaPCGActors.Num(),
+        GetWorld() && GetWorld()->IsGameWorld() ? TEXT("true") : TEXT("false")
+    );
+
     for (AActor* AreaActor : SpawnedAreaPCGActors)
     {
         if (!IsValid(AreaActor))
@@ -389,7 +488,16 @@ void APCGZoneController::ClearSpawnedAreaPCGActors()
             PCGComponent->Cleanup();
         }
 
-        AreaActor->Destroy();
+        const FString ActorName = AreaActor->GetName();
+        const bool bDestroyed = AreaActor->Destroy();
+
+        UE_LOG(
+            LogTemp,
+            Log,
+            TEXT("[AreaCleanup] Actor=%s DestroyResult=%s"),
+            *ActorName,
+            bDestroyed ? TEXT("true") : TEXT("false")
+        );
     }
 
     SpawnedAreaPCGActors.Empty();
@@ -401,7 +509,7 @@ void APCGZoneController::LoadSampleZoneJson()
    {
   "theme": "forest",
   "base_environment": {
-    "tree_density": 0.1,
+    "tree_density": 0.05,
     "rock_density": 0.1,
     "grass_density": 0.3
   },
@@ -817,11 +925,21 @@ bool APCGZoneController::ApplyZoneJsonString(const FString& JsonString)
         return false;
     }
 
+    // 기존 main_path 데이터를 다중 경로 배열에 연결
+    // JSON을 다시 적용할 때 이전 경로가 누적되지 않도록 초기화
+    CurrentZoneData.Paths.Reset();
+    CurrentZoneData.Paths.Add(CurrentZoneData.MainPath);
+
+    UE_LOG(
+        LogTemp,
+        Log,
+        TEXT("[PCGZoneController] Path data prepared. PathCount=%d"),
+        CurrentZoneData.Paths.Num()
+    );
+
     UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Zone JSON applied to CurrentZoneData."));
 
     return true;
-    
-
 }
 
 EZonePathType APCGZoneController::ParsePathType(const FString& PathTypeString) const
@@ -984,7 +1102,7 @@ void APCGZoneController::ApplyGameplayMarkers()
     );
 
     // 길 및 Area PCG와 동일한 위치 변환 기준
-    const float AreaPositionScale = 0.65f;
+    const float AreaPositionScale = 0.9f;
 
     const FVector2D AreaUsableSize(
         CurrentZoneData.ZoneSize.X * AreaPositionScale,

@@ -99,6 +99,10 @@ struct FZoneGenerationData
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Path")
     FZonePathData MainPath;
 
+    // 여러 경로의 데이터를 보관하는 배열
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Path")
+    TArray<FZonePathData> Paths;
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Area")
     TArray<FZoneAreaData> Areas;
 };
@@ -118,6 +122,10 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PCG")
     TObjectPtr<AActor> PathPCGActor;
+
+    // 각 경로의 Spline과 PCG를 구성할 BP 클래스
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Path|Classes")
+    TSubclassOf<AActor> PathPCGClass;
 
     // Spawn 구역 환경을 생성할 Area PCG BP 클래스
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Area|Classes")
@@ -199,8 +207,12 @@ private:
     TArray<TObjectPtr<AActor>> SpawnedEnemySpawners;
 
     // 자동 생성한 Area PCG Actor들을 재생성 시 정리하기 위한 배열
-    UPROPERTY(Transient)
+    UPROPERTY()
     TArray<TObjectPtr<AActor>> SpawnedAreaPCGActors;
+
+    // 자동 생성한 경로 Actor들을 재생성 시 정리하기 위한 배열
+    UPROPERTY()
+    TArray<TObjectPtr<AActor>> SpawnedPathPCGActors;
 
     // 현재 JSON에서 요구하는 전체 Combat 구역 수
     UPROPERTY(VisibleAnywhere, Category = "Gameplay|Combat")
@@ -220,9 +232,10 @@ private:
     // CurrentZoneData의 기본 환경 밀도값을 Base Environment PCG에 적용하는 내부 함수
     void ApplyBaseEnvironmentPCG();
 
-    // 현재 프로토타입에서는 PathPCGActor의 기존 Z 높이를 기준으로 길을 생성한다.
-    // 추후에는 Landscape LineTrace와 테마별 PathHeightOffset을 사용해 길 에셋 높이를 보정할 예정이다.
     void ApplyPathPCG();
+
+    // 이전에 자동 생성한 경로 Actor와 PCG 생성물 정리
+    void ClearSpawnedPathPCGActors();
 
     void ApplyAreaPCG();
 

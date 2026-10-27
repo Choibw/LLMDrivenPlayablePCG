@@ -94,14 +94,21 @@ void AZoneEnemySpawner::ClearSpawnedEnemies()
 
 FVector AZoneEnemySpawner::GetRandomSpawnLocation() const
 {
-	if (SpawnRadius <= 0.0f)
+	FVector SpawnLocation = GetActorLocation();
+
+	if (SpawnRadius > 0.0f)
 	{
-		return GetActorLocation();
+		const FVector2D RandomOffset =
+			FMath::RandPointInCircle(SpawnRadius);
+
+		SpawnLocation.X += RandomOffset.X;
+		SpawnLocation.Y += RandomOffset.Y;
 	}
 
-	const FVector2D RandomOffset2D = FMath::RandPointInCircle(SpawnRadius);
+	// 발표용 임시 높이: 적 메시의 아랫면이 바닥에 맞도록 조정
+	SpawnLocation.Z = 100.0f;
 
-	return GetActorLocation() + FVector(RandomOffset2D.X, RandomOffset2D.Y, 0.0f);
+	return SpawnLocation;
 }
 
 void AZoneEnemySpawner::HandleEnemyDied(AZoneEnemyBase* DeadEnemy)
