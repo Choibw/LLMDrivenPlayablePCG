@@ -20,7 +20,15 @@ class LLMDRIVENPLAYABLEPCG_API AZonePlayerCharacter : public ACharacter
 public:
 	AZonePlayerCharacter();
 
+	UFUNCTION(BlueprintCallable, Category = "Health")
+	void ApplyDamage(float DamageAmount);
+
+	UFUNCTION(BlueprintPure, Category = "Health")
+	bool IsDead() const { return bIsDead; }
+
 protected:
+	virtual void BeginPlay() override;
+
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
 protected:
@@ -50,10 +58,22 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
 	float AttackRange = 1200.0f;
 
+protected:
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Health",
+		meta = (ClampMin = "1.0"))
+	float MaxHealth = 100.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Health")
+	float CurrentHealth = 0.0f;
+
 private:
 	void Move(const FInputActionValue& Value);
 	void Look(const FInputActionValue& Value);
 	void Attack();
 	void PerformAttackTrace();
+	void Die();
 
+private:
+	UPROPERTY(VisibleInstanceOnly, Category = "Health")
+	bool bIsDead = false;
 };

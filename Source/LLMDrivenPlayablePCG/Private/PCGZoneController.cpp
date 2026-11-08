@@ -506,10 +506,10 @@ void APCGZoneController::ClearSpawnedAreaPCGActors()
 void APCGZoneController::LoadSampleZoneJson()
 {
     const FString SampleJson = TEXT(R"(
-   {
+        {
   "theme": "forest",
   "base_environment": {
-    "tree_density": 0.05,
+    "tree_density": 0.6,
     "rock_density": 0.1,
     "grass_density": 0.3
   },
@@ -570,15 +570,6 @@ void APCGZoneController::LoadSampleZoneJson()
       },
       "normalized_radius": 0.06,
       "detail_density": 0.4
-    },
-    {
-      "area_type": "combat",
-      "normalized_center": {
-        "x": 0.55,
-        "y": 0.61
-      },
-      "normalized_radius": 0.06,
-      "detail_density": 0.6
     },
     {
       "area_type": "goal",

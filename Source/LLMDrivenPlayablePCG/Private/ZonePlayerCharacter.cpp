@@ -5,6 +5,7 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerController.h"
 
 #include "EnhancedInputComponent.h"
 #include "InputActionValue.h"
@@ -32,6 +33,53 @@ AZonePlayerCharacter::AZonePlayerCharacter()
 	FollowCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FollowCamera"));
 	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
 	FollowCamera->bUsePawnControlRotation = false;
+}
+
+void AZonePlayerCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+
+	MaxHealth = FMath::Max(MaxHealth, 1.0f);
+	CurrentHealth = MaxHealth;
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("[PlayerHealth] Initialized. Health=%.1f / %.1f"),
+		CurrentHealth,
+		MaxHealth
+	);
+}
+
+void AZonePlayerCharacter::ApplyDamage(float DamageAmount)
+{
+	// 잘못된 피해량이나 이미 체력이 소진된 상태는 무시
+	if (!FMath::IsFinite(DamageAmount)
+		|| DamageAmount <= 0.0f
+		|| bIsDead)
+	{
+		return;
+	}
+
+	CurrentHealth = FMath::Clamp(
+		CurrentHealth - DamageAmount,
+		0.0f,
+		MaxHealth
+	);
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("[PlayerHealth] Damaged. Damage=%.1f Health=%.1f / %.1f"),
+		DamageAmount,
+		CurrentHealth,
+		MaxHealth
+	);
+
+	if (CurrentHealth <= 0.0f)
+	{
+		Die();
+	}
 }
 
 void AZonePlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -96,6 +144,11 @@ void AZonePlayerCharacter::Look(const FInputActionValue& Value)
 
 void AZonePlayerCharacter::Attack()
 {
+	if (bIsDead)
+	{
+		return;
+	}
+
 	PerformAttackTrace();
 }
 
@@ -158,5 +211,35 @@ void AZonePlayerCharacter::PerformAttackTrace()
 	UE_LOG(LogTemp, Warning, TEXT("[PlayerAttack] Enemy damaged. Target=%s Damage=%f"),
 		*GetNameSafe(HitEnemy),
 		AttackDamage
+	);
+}
+
+void AZonePlayerCharacter::Die()
+{
+	// 사망 처리가 중복 실행되지 않도록 방지
+	if (bIsDead)
+	{
+		return;
+	}
+
+	bIsDead = true;
+
+	StopJumping();
+
+	// 현재 움직임을 멈추고 이동 기능 비활성화
+	GetCharacterMovement()->StopMovementImmediately();
+	GetCharacterMovement()->DisableMovement();
+
+	// 이동·시점·점프·공격 입력 중단
+	if (APlayerController* PlayerController =
+		Cast<APlayerController>(GetController()))
+	{
+		DisableInput(PlayerController);
+	}
+
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("[PlayerHealth] Player died.")
 	);
 }
