@@ -21,6 +21,7 @@
 
 #include "ZoneEnemySpawner.h"
 #include "ZoneGoalPoint.h"
+#include "ZonePlayerCharacter.h"
 
 // Sets default values
 APCGZoneController::APCGZoneController()
@@ -693,6 +694,39 @@ void APCGZoneController::MovePlayerToSpawnPoint()
 
     UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Player moved to SpawnPoint. Location=%s"),
         *TargetLocation.ToString());
+}
+
+bool APCGZoneController::RespawnPlayerAtSpawnPoint()
+{
+    if (!IsValid(SpawnPointActor))
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[PCGZoneController] Respawn failed: SpawnPointActor is not valid.")
+        );
+
+        return false;
+    }
+
+    AZonePlayerCharacter* Player = Cast<AZonePlayerCharacter>(
+        UGameplayStatics::GetPlayerPawn(this, 0)
+    );
+
+    if (!IsValid(Player))
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[PCGZoneController] Respawn failed: player is not valid.")
+        );
+
+        return false;
+    }
+
+    return Player->RespawnAtLocation(
+        SpawnPointActor->GetActorLocation()
+    );
 }
 
 bool APCGZoneController::ApplyZoneJsonString(const FString& JsonString)

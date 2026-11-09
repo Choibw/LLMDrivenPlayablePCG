@@ -26,8 +26,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Health")
 	bool IsDead() const { return bIsDead; }
 
+	UFUNCTION(BlueprintCallable, Category = "Health")
+	bool RespawnAtLocation(const FVector& RespawnLocation);
+
 protected:
 	virtual void BeginPlay() override;
+
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
@@ -76,4 +81,14 @@ private:
 private:
 	UPROPERTY(VisibleInstanceOnly, Category = "Health")
 	bool bIsDead = false;
+
+protected:
+	UPROPERTY(EditDefaultsOnly, Category = "Health",
+		meta = (ClampMin = "0.1"))
+	float RespawnDelay = 3.0f;
+
+private:
+	FTimerHandle RespawnTimerHandle;
+
+	void RequestRespawn();
 };

@@ -15,6 +15,9 @@
 #include "DrawDebugHelpers.h"
 #include "Kismet/GameplayStatics.h"
 
+#include "PCGZoneController.h"
+#include "TimerManager.h"
+
 AZonePlayerCharacter::AZonePlayerCharacter()
 {
 	PrimaryActorTick.bCanEverTick = false;
@@ -80,6 +83,76 @@ void AZonePlayerCharacter::ApplyDamage(float DamageAmount)
 	{
 		Die();
 	}
+}
+
+bool AZonePlayerCharacter::RespawnAtLocation(const FVector& RespawnLocation)
+{
+	// 살아 있으면 부활 처리하지 않음
+	if (!bIsDead)
+	{
+		return false;
+	}
+
+	APlayerController* PlayerController =
+		Cast<APlayerController>(GetController());
+
+	if (!PlayerController)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PlayerHealth] Respawn failed: no PlayerController.")
+		);
+
+		return false;
+	}
+
+	// 지정 위치로 이동. 충돌 때문에 이동할 수 없으면 부활 중단
+	const bool bMoved = TeleportTo(
+		RespawnLocation,
+		GetActorRotation(),
+		false,
+		false
+	);
+
+	if (!bMoved)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PlayerHealth] Respawn failed: destination blocked. Location=%s"),
+			*RespawnLocation.ToString()
+		);
+
+		return false;
+	}
+
+	// 별도 호출로 먼저 부활한 경우에도 예약된 타이머 정리
+	GetWorldTimerManager().ClearTimer(RespawnTimerHandle);
+
+	// 체력과 생존 상태 복구
+	CurrentHealth = MaxHealth;
+	bIsDead = false;
+
+	// 사망 시 중단했던 이동 기능 복구
+	StopJumping();
+
+	GetCharacterMovement()->StopMovementImmediately();
+	GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+
+	// 사망 시 비활성화했던 입력 복구
+	EnableInput(PlayerController);
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("[PlayerHealth] Respawned. Health=%.1f / %.1f Location=%s"),
+		CurrentHealth,
+		MaxHealth,
+		*GetActorLocation().ToString()
+	);
+
+	return true;
 }
 
 void AZonePlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -242,4 +315,56 @@ void AZonePlayerCharacter::Die()
 		Warning,
 		TEXT("[PlayerHealth] Player died.")
 	);
+
+	GetWorldTimerManager().SetTimer(
+		RespawnTimerHandle,
+		this,
+		&AZonePlayerCharacter::RequestRespawn,
+		FMath::Max(RespawnDelay, 0.1f),
+		false
+	);
+}
+
+void AZonePlayerCharacter::RequestRespawn()
+{
+	// 다른 경로로 이미 부활했다면 처리하지 않음
+	if (!bIsDead)
+	{
+		return;
+	}
+
+	APCGZoneController* ZoneController =
+		Cast<APCGZoneController>(
+			UGameplayStatics::GetActorOfClass(
+				this,
+				APCGZoneController::StaticClass()
+			)
+		);
+
+	if (!IsValid(ZoneController))
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PlayerHealth] Respawn failed: ZoneController not found.")
+		);
+
+		return;
+	}
+
+	if (!ZoneController->RespawnPlayerAtSpawnPoint())
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[PlayerHealth] Respawn request failed.")
+		);
+	}
+}
+
+void AZonePlayerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	GetWorldTimerManager().ClearTimer(RespawnTimerHandle);
+
+	Super::EndPlay(EndPlayReason);
 }

@@ -185,6 +185,8 @@ public:
     UFUNCTION(CallInEditor, BlueprintCallable, Category = "Gameplay")
     void MovePlayerToSpawnPoint();
 
+    bool RespawnPlayerAtSpawnPoint();
+
 private:
     UPROPERTY()
     TObjectPtr<UPCGComponent> BaseEnvironmentPCGComponent;
