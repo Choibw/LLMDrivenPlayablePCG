@@ -26,6 +26,26 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Health")
 	bool IsDead() const { return bIsDead; }
 
+	UFUNCTION(BlueprintPure, Category = "Health")
+	float GetCurrentHealth() const
+	{
+		return CurrentHealth;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Health")
+	float GetMaxHealth() const
+	{
+		return MaxHealth;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Health")
+	float GetHealthPercent() const
+	{
+		return MaxHealth > 0.0f
+			? FMath::Clamp(CurrentHealth / MaxHealth, 0.0f, 1.0f)
+			: 0.0f;
+	}
+
 	UFUNCTION(BlueprintCallable, Category = "Health")
 	bool RespawnAtLocation(const FVector& RespawnLocation);
 
