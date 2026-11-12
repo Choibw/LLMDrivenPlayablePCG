@@ -16,7 +16,11 @@
 #include "Kismet/GameplayStatics.h"
 
 #include "PCGZoneController.h"
+#include "ZonePlayerController.h"
 #include "TimerManager.h"
+
+#include "ZoneDialogueNPC.h"
+#include "EngineUtils.h"
 
 AZonePlayerCharacter::AZonePlayerCharacter()
 {
@@ -186,6 +190,11 @@ void AZonePlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInpu
 
 		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
 	}
+
+	if (InteractAction)
+	{
+		EnhancedInputComponent->BindAction(InteractAction, ETriggerEvent::Started, this, &AZonePlayerCharacter::Interact);
+	}
 }
 
 void AZonePlayerCharacter::Move(const FInputActionValue& Value)
@@ -323,6 +332,62 @@ void AZonePlayerCharacter::Die()
 		FMath::Max(RespawnDelay, 0.1f),
 		false
 	);
+}
+
+void AZonePlayerCharacter::Interact()
+{
+	if (bIsDead || !GetWorld())
+	{
+		return;
+	}
+
+	AZoneDialogueNPC* ClosestNPC = nullptr;
+	double ClosestDistanceSquared =
+		TNumericLimits<double>::Max();
+
+	// 대화 가능한 NPC 중 가장 가까운 NPC 선택
+	for (TActorIterator<AZoneDialogueNPC> It(GetWorld()); It; ++It)
+	{
+		AZoneDialogueNPC* NPC = *It;
+
+		if (!IsValid(NPC) || !NPC->CanInteract(this))
+		{
+			continue;
+		}
+
+		const double DistanceSquared = FVector::DistSquared(
+			GetActorLocation(),
+			NPC->GetActorLocation()
+		);
+
+		if (DistanceSquared < ClosestDistanceSquared)
+		{
+			ClosestDistanceSquared = DistanceSquared;
+			ClosestNPC = NPC;
+		}
+	}
+
+	if (!IsValid(ClosestNPC))
+	{
+		UE_LOG(
+			LogTemp,
+			Log,
+			TEXT("[Dialogue] No nearby NPC.")
+		);
+
+		return;
+	}
+
+	AZonePlayerController* PlayerController =
+		Cast<AZonePlayerController>(GetController());
+
+	if (!IsValid(PlayerController))
+	{
+		return;
+	}
+
+	// 위치 이동, 입력 차단, 카메라 전환은 컨트롤러에서 처리
+	PlayerController->BeginNPCDialogue(ClosestNPC);
 }
 
 void AZonePlayerCharacter::RequestRespawn()

@@ -8,6 +8,8 @@
 
 class UInputMappingContext;
 class UZonePlayerHUD;
+class AZoneDialogueNPC;
+class UZoneDialogueWidget;
 
 /**
  * 
@@ -16,6 +18,11 @@ UCLASS()
 class LLMDRIVENPLAYABLEPCG_API AZonePlayerController : public APlayerController
 {
 	GENERATED_BODY()
+
+public:
+	bool BeginNPCDialogue(AZoneDialogueNPC* NPC);
+
+	void EndNPCDialogue();
 	
 protected:
 	virtual void BeginPlay() override;
@@ -34,8 +41,27 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "UI")
 	TSubclassOf<UZonePlayerHUD> PlayerHUDClass;
 
+	UPROPERTY(EditDefaultsOnly, Category = "Dialogue")
+	TSubclassOf<UZoneDialogueWidget> DialogueWidgetClass;
+
+private:
+	void FinishDialogueEntry();
+
+	void FadeInDialogue();
+
 private:
 	// 角力 积己等 HUD
 	UPROPERTY(Transient)
 	TObjectPtr<UZonePlayerHUD> PlayerHUD;
+
+private:
+	bool bInDialogue = false;
+
+	FTimerHandle DialogueEntryTimerHandle;
+
+	UPROPERTY(Transient)
+	TObjectPtr<AZoneDialogueNPC> PendingDialogueNPC;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UZoneDialogueWidget> DialogueWidget;
 };

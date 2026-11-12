@@ -76,6 +76,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> JumpAction;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+	TObjectPtr<UInputAction> InteractAction;
+
 protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
 	float AttackDamage = 50.0f;
@@ -97,6 +100,7 @@ private:
 	void Attack();
 	void PerformAttackTrace();
 	void Die();
+	void Interact();
 
 private:
 	UPROPERTY(VisibleInstanceOnly, Category = "Health")
