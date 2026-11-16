@@ -10,6 +10,7 @@ class UInputMappingContext;
 class UZonePlayerHUD;
 class AZoneDialogueNPC;
 class UZoneDialogueWidget;
+class APCGZoneController;
 
 /**
  * 
@@ -23,6 +24,8 @@ public:
 	bool BeginNPCDialogue(AZoneDialogueNPC* NPC);
 
 	void EndNPCDialogue();
+
+	void RequestZoneFromDialogue();
 	
 protected:
 	virtual void BeginPlay() override;
@@ -48,6 +51,20 @@ private:
 	void FinishDialogueEntry();
 
 	void FadeInDialogue();
+
+	void HandleZoneRequestFinished(
+		bool bSuccess,
+		const FString& Message
+	);
+
+	void HandleZoneRequestStatusChanged(
+		const FString& Message
+	);
+
+private:
+	bool bDialogueRequestInProgress = false;
+
+	TWeakObjectPtr<APCGZoneController> RequestedZoneController;
 
 private:
 	// 角力 积己等 HUD

@@ -42,6 +42,18 @@ void UZoneDialogueWidget::OpenDialogue(AZoneDialogueNPC* NPC)
     {
         BTN_Submit->SetIsEnabled(true);
     }
+
+    if (TXT_SubmitLabel)
+    {
+        TXT_SubmitLabel->SetText(
+            FText::FromString(TEXT("Next"))
+        );
+    }
+
+    if (BTN_Close)
+    {
+        BTN_Close->SetIsEnabled(true);
+    }
 }
 
 void UZoneDialogueWidget::NativeConstruct()
@@ -73,6 +85,65 @@ void UZoneDialogueWidget::FocusAnswerInput()
     }
 }
 
+bool UZoneDialogueWidget::GetCompletedDialogue(
+    TArray<FString>& OutQuestions,
+    TArray<FString>& OutAnswers
+) const
+{
+    OutQuestions.Reset();
+    OutAnswers.Reset();
+
+    if (!bDialogueCompleted
+        || !IsValid(DialogueNPC)
+        || Answers.IsEmpty()
+        || Answers.Num() != DialogueNPC->GetQuestionCount())
+    {
+        return false;
+    }
+
+    for (int32 Index = 0; Index < Answers.Num(); ++Index)
+    {
+        OutQuestions.Add(DialogueNPC->GetQuestion(Index));
+    }
+
+    OutAnswers = Answers;
+
+    return true;
+}
+
+void UZoneDialogueWidget::SetGenerationPending(
+    bool bPending,
+    const FString& StatusMessage
+)
+{
+    if (BTN_Submit)
+    {
+        BTN_Submit->SetIsEnabled(!bPending);
+    }
+
+    // 요청 중에는 대화창을 닫지 못하게 함
+    if (BTN_Close)
+    {
+        BTN_Close->SetIsEnabled(!bPending);
+    }
+
+    if (TXT_SubmitLabel)
+    {
+        TXT_SubmitLabel->SetText(
+            FText::FromString(
+                bPending ? TEXT("Generating...") : TEXT("Generate")
+            )
+        );
+    }
+
+    if (TXT_Question && !StatusMessage.IsEmpty())
+    {
+        TXT_Question->SetText(
+            FText::FromString(StatusMessage)
+        );
+    }
+}
+
 void UZoneDialogueWidget::HandleCloseClicked()
 {
     AZonePlayerController* DialogueController =
@@ -86,10 +157,22 @@ void UZoneDialogueWidget::HandleCloseClicked()
 
 void UZoneDialogueWidget::HandleSubmitClicked()
 {
-    if (bDialogueCompleted
-        || !IsValid(DialogueNPC)
-        || !INPUT_Answer)
+    if (!IsValid(DialogueNPC) || !INPUT_Answer)
     {
+        return;
+    }
+
+    // 답변 수집이 끝났다면 컨트롤러에 생성 요청
+    if (bDialogueCompleted)
+    {
+        AZonePlayerController* DialogueController =
+            Cast<AZonePlayerController>(GetOwningPlayer());
+
+        if (IsValid(DialogueController))
+        {
+            DialogueController->RequestZoneFromDialogue();
+        }
+
         return;
     }
 
@@ -127,9 +210,11 @@ void UZoneDialogueWidget::HandleSubmitClicked()
     {
         bDialogueCompleted = true;
 
-        if (BTN_Submit)
+        if (TXT_SubmitLabel)
         {
-            BTN_Submit->SetIsEnabled(false);
+            TXT_SubmitLabel->SetText(
+                FText::FromString(TEXT("Generate"))
+            );
         }
 
         INPUT_Answer->SetIsReadOnly(true);

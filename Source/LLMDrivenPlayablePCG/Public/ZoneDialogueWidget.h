@@ -21,6 +21,16 @@ public:
 
     void FocusAnswerInput();
 
+    bool GetCompletedDialogue(
+        TArray<FString>& OutQuestions,
+        TArray<FString>& OutAnswers
+    ) const;
+
+    void SetGenerationPending(
+        bool bPending,
+        const FString& StatusMessage
+    );
+
 protected:
     virtual void NativeConstruct() override;
 
@@ -36,6 +46,9 @@ protected:
 
     UPROPERTY(meta = (BindWidget))
     TObjectPtr<UButton> BTN_Close;
+
+    UPROPERTY(meta = (BindWidget))
+    TObjectPtr<UTextBlock> TXT_SubmitLabel;
 
 private:
     UFUNCTION()

@@ -117,6 +117,14 @@ public:
 	APCGZoneController();
 
 public:	
+    DECLARE_MULTICAST_DELEGATE_TwoParams(FOnZoneRequestFinished, bool, const FString&);
+
+    FOnZoneRequestFinished OnZoneRequestFinished;
+
+    DECLARE_MULTICAST_DELEGATE_OneParam(FOnZoneRequestStatusChanged, const FString&);
+
+    FOnZoneRequestStatusChanged OnZoneRequestStatusChanged;
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PCG")
     TObjectPtr<AActor> BaseEnvironmentPCGActor;
 
@@ -162,6 +170,14 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Backend")
     FString BackendUrl = TEXT("http://127.0.0.1:8000/generate-zone");
 
+    UPROPERTY(EditAnywhere, Category = "Backend",
+        meta = (ClampMin = "1.0"))
+    float BackendRequestTimeoutSeconds = 180.0f;
+
+    UPROPERTY(EditAnywhere, Category = "Zone Generation",
+        meta = (ClampMin = "1.0"))
+    float PCGGenerationTimeoutSeconds = 120.0f;
+
     // 테스트 임시변수/ 질문&답변
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Backend")
     FString TestNPCQuestion = TEXT("");
@@ -182,10 +198,22 @@ public:
     UFUNCTION(CallInEditor, BlueprintCallable, Category = "Backend")
     void RequestZoneDataFromBackend();
 
+    // 질문·답변 배열을 백엔드로 전송
+    // 반환값은 응답 성공이 아니라 요청 시작 여부
+    bool RequestZoneDataFromDialogue(
+        const TArray<FString>& Questions,
+        const TArray<FString>& Answers
+    );
+
     UFUNCTION(CallInEditor, BlueprintCallable, Category = "Gameplay")
     void MovePlayerToSpawnPoint();
 
     bool RespawnPlayerAtSpawnPoint();
+
+protected:
+    virtual void EndPlay(
+        const EEndPlayReason::Type EndPlayReason
+    ) override;
 
 private:
     UPROPERTY()
@@ -228,6 +256,22 @@ private:
     UPROPERTY()
     TSet<TObjectPtr<AZoneEnemySpawner>> ClearedCombatSpawners;
 
+    bool bBackendRequestInProgress = false;
+
+    // 이번 생성에서 아직 완료되지 않은 PCG들
+    TSet<TWeakObjectPtr<UPCGComponent>> PendingPCGComponents;
+
+    int32 TotalPCGComponentCount = 0;
+
+    bool bZoneGenerationInProgress = false;
+    bool bRegisteringPCGComponents = false;
+    bool bZoneGenerationFailed = false;
+
+    // 이번 맵 생성이 백엔드 응답에서 시작됐는지
+    bool bWaitingForBackendPCG = false;
+
+    FTimerHandle PCGGenerationTimeoutHandle;
+
 private:
     void UpdateZoneBoundsFromBaseEnvironment();
 
@@ -265,4 +309,25 @@ private:
 
     // 전체 전투 완료 여부를 확인하고 Goal 활성화
     void UpdateGoalActivation();
+
+    void FinishBackendRequest(
+        bool bSuccess,
+        const FString& Message
+    );
+
+    void ObservePCGGeneration(UPCGComponent* PCGComponent);
+
+    UFUNCTION()
+    void HandlePCGGenerationCompleted(UPCGComponent* PCGComponent);
+
+    UFUNCTION()
+    void HandlePCGGenerationCancelled(UPCGComponent* PCGComponent);
+
+    void TryFinishZoneGeneration();
+
+    void HandlePCGGenerationTimeout();
+
+    void ClearPCGGenerationTracking(bool bCancelPending);
+
+    void MarkZoneGenerationFailed(const FString& Reason);
 };

@@ -1,9 +1,10 @@
-// Fill out your copyright notice in the Description page of Project Settings.
+ï»¿// Fill out your copyright notice in the Description page of Project Settings.
 
 
 #include "PCGZoneController.h"
 #include "PCGComponent.h"
 #include "PCGGraph.h"
+#include "PCGSubsystem.h"
 
 #include "Components/SplineComponent.h"
 
@@ -23,6 +24,9 @@
 #include "ZoneGoalPoint.h"
 #include "ZonePlayerCharacter.h"
 
+#include "TimerManager.h"
+#include "Engine/World.h"
+
 // Sets default values
 APCGZoneController::APCGZoneController()
 {
@@ -32,13 +36,67 @@ APCGZoneController::APCGZoneController()
 
 void APCGZoneController::GenerateZone()
 {
+    if (bZoneGenerationInProgress)
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[ZoneGeneration] Generation is already in progress.")
+        );
+        return;
+    }
+
+    // HTTP ì‘ë‹µì„ ê¸°ë‹¤ë¦¬ëŠ” ë™ì•ˆ ìˆ˜ë™ ìƒì„±ì„ ë§‰ìŒ
+    if (bBackendRequestInProgress && !bWaitingForBackendPCG)
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[ZoneGeneration] Waiting for backend response.")
+        );
+        return;
+    }
+
+    PendingPCGComponents.Reset();
+    TotalPCGComponentCount = 0;
+
+    bZoneGenerationInProgress = true;
+    bRegisteringPCGComponents = true;
+    bZoneGenerationFailed = false;
+
+    // ì‹¤í–‰ ì¤‘ì¸ ê²Œì„ì—ì„œ ìƒì„± ëŒ€ê¸° ì‹œê°„ ì œí•œ
+    if (GetWorld() && GetWorld()->IsGameWorld())
+    {
+        GetWorldTimerManager().SetTimer(
+            PCGGenerationTimeoutHandle,
+            this,
+            &APCGZoneController::HandlePCGGenerationTimeout,
+            FMath::Max(PCGGenerationTimeoutSeconds, 1.0f),
+            false
+        );
+    }
+
     UpdateZoneBoundsFromBaseEnvironment();
+
     ApplyBaseEnvironmentPCG();
     ApplyPathPCG();
     ApplyAreaPCG();
 
     ClearSpawnedGameplayMarkers();
     ApplyGameplayMarkers();
+
+    // ì´ì œ ëª¨ë“  ìƒì„± ëŒ€ìƒì˜ ë“±ë¡ì´ ëë‚¨
+    bRegisteringPCGComponents = false;
+
+    UE_LOG(
+        LogTemp,
+        Log,
+        TEXT("[ZoneGeneration] Registration finished. Total=%d Pending=%d"),
+        TotalPCGComponentCount,
+        PendingPCGComponents.Num()
+    );
+
+    TryFinishZoneGeneration();
 }
 
 void APCGZoneController::UpdateZoneBoundsFromBaseEnvironment()
@@ -67,7 +125,7 @@ void APCGZoneController::UpdateZoneBoundsFromBaseEnvironment()
         BoundsExtent.Y * 2.0f
     );
 
-    // XY´Â ±âº» È¯°æ Bounds, Z´Â µ¶¸³ÀûÀÎ ¼³Á¤°ª »ç¿ë
+    // XYëŠ” ê¸°ë³¸ í™˜ê²½ Bounds, ZëŠ” ë…ë¦½ì ì¸ ì„¤ì •ê°’ ì‚¬ìš©
     CurrentZoneData.ZoneCenter = FVector(
         BoundsOrigin.X,
         BoundsOrigin.Y,
@@ -88,6 +146,9 @@ void APCGZoneController::ApplyBaseEnvironmentPCG()
     if (!BaseEnvironmentPCGActor)
     {
         UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] TargetPCGActor is not set."));
+
+        MarkZoneGenerationFailed(TEXT("Base environment actor is missing."));
+
         return;
     }
 
@@ -96,6 +157,9 @@ void APCGZoneController::ApplyBaseEnvironmentPCG()
     if (!BaseEnvironmentPCGComponent)
     {
         UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] TargetPCGComponent is null."));
+
+        MarkZoneGenerationFailed(TEXT("Base environment PCG component is missing."));
+
         return;
     }
 
@@ -104,6 +168,9 @@ void APCGZoneController::ApplyBaseEnvironmentPCG()
     if (!GraphInterface)
     {
         UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] PCG GraphInterface is null."));
+
+        MarkZoneGenerationFailed(TEXT("Base environment graph is missing."));
+
         return;
     }
 
@@ -117,6 +184,9 @@ void APCGZoneController::ApplyBaseEnvironmentPCG()
 
     BaseEnvironmentPCGComponent->Cleanup();
     BaseEnvironmentPCGComponent->DirtyGenerated(EPCGComponentDirtyFlag::All);
+
+    ObservePCGGeneration(BaseEnvironmentPCGComponent);
+
     BaseEnvironmentPCGComponent->Generate(true);
 
     UE_LOG(
@@ -134,6 +204,8 @@ void APCGZoneController::ApplyPathPCG()
     UWorld* World = GetWorld();
     if (!World)
     {
+        MarkZoneGenerationFailed(TEXT("World is unavailable for path generation."));
+
         return;
     }
 
@@ -144,10 +216,13 @@ void APCGZoneController::ApplyPathPCG()
             Warning,
             TEXT("[PCGZoneController] PathPCGClass is not set.")
         );
+
+        MarkZoneGenerationFailed(TEXT("Path PCG class is missing."));
+
         return;
     }
 
-    // ÀÌÀü¿¡ ÀÚµ¿ »ı¼ºÇÑ °æ·Î¿Í PCG °á°ú Á¤¸®
+    // ì´ì „ì— ìë™ ìƒì„±í•œ ê²½ë¡œì™€ PCG ê²°ê³¼ ì •ë¦¬
     ClearSpawnedPathPCGActors();
 
     const TArray<FZonePathData>& Paths = CurrentZoneData.Paths;
@@ -159,10 +234,13 @@ void APCGZoneController::ApplyPathPCG()
             Warning,
             TEXT("[PCGZoneController] No path data.")
         );
+
+        MarkZoneGenerationFailed(TEXT("Path data is empty."));
+
         return;
     }
 
-    // Area¡¤°ÔÀÓÇÃ·¹ÀÌ ¸¶Ä¿¿Í µ¿ÀÏÇÑ XY º¯È¯ ±âÁØ
+    // AreaÂ·ê²Œì„í”Œë ˆì´ ë§ˆì»¤ì™€ ë™ì¼í•œ XY ë³€í™˜ ê¸°ì¤€
     const float PathAreaScale = 0.9f;
 
     const FVector2D PathUsableSize(
@@ -182,6 +260,9 @@ void APCGZoneController::ApplyPathPCG()
                 TEXT("[PCGZoneController] Path requires at least 2 points. Index=%d"),
                 PathIndex
             );
+
+            MarkZoneGenerationFailed(TEXT("Path has fewer than two points."));
+
             continue;
         }
 
@@ -210,6 +291,9 @@ void APCGZoneController::ApplyPathPCG()
                 TEXT("[PCGZoneController] Failed to spawn Path Actor. Index=%d"),
                 PathIndex
             );
+
+            MarkZoneGenerationFailed(TEXT("Failed to spawn a path actor."));
+
             continue;
         }
 
@@ -229,6 +313,8 @@ void APCGZoneController::ApplyPathPCG()
                 *PathActor->GetName()
             );
 
+            MarkZoneGenerationFailed(TEXT("Path actor is missing required components."));
+
             if (PCGComponent)
             {
                 PCGComponent->Cleanup();
@@ -240,7 +326,7 @@ void APCGZoneController::ApplyPathPCG()
 
         SpawnedPathPCGActors.Add(PathActor);
 
-        // BPÀÇ ±âº» SplineÀ¸·Î »ı¼ºµÈ °á°ú Á¤¸®
+        // BPì˜ ê¸°ë³¸ Splineìœ¼ë¡œ ìƒì„±ëœ ê²°ê³¼ ì •ë¦¬
         //PCGComponent->Cleanup();
         SplineComponent->ClearSplinePoints(false);
 
@@ -256,7 +342,7 @@ void APCGZoneController::ApplyPathPCG()
                 CurrentZoneData.ZoneCenter
                 + FVector(LocalX, LocalY, 0.0f);
 
-            // ¿ùµå ÁÂÇ¥·Î Àü´ŞÇÏ¿© SplineComponentÀÇ »ó´ë º¯È¯¿¡ ´ëÀÀ
+            // ì›”ë“œ ì¢Œí‘œë¡œ ì „ë‹¬í•˜ì—¬ SplineComponentì˜ ìƒëŒ€ ë³€í™˜ì— ëŒ€ì‘
             SplineComponent->AddSplinePoint(
                 WorldPoint,
                 ESplineCoordinateSpace::World,
@@ -267,6 +353,9 @@ void APCGZoneController::ApplyPathPCG()
         SplineComponent->UpdateSpline();
 
         PCGComponent->DirtyGenerated(EPCGComponentDirtyFlag::All);
+
+        ObservePCGGeneration(PCGComponent);
+
         PCGComponent->Generate(true);
 
         UE_LOG(
@@ -318,13 +407,15 @@ void APCGZoneController::ApplyAreaPCG()
     UWorld* World = GetWorld();
     if (!World)
     {
+        MarkZoneGenerationFailed(TEXT("World is unavailable for area generation."));
+
         return;
     }
 
-    // ÀÌÀü¿¡ ÀÚµ¿ »ı¼ºÇß´ø Area Actor¿Í PCG °á°ú Á¤¸®
+    // ì´ì „ì— ìë™ ìƒì„±í–ˆë˜ Area Actorì™€ PCG ê²°ê³¼ ì •ë¦¬
     ClearSpawnedAreaPCGActors();
 
-    // °æ·Î¡¤°ÔÀÓÇÃ·¹ÀÌ ¸¶Ä¿¿Í µ¿ÀÏÇÑ XY ÁÂÇ¥ º¯È¯ ±âÁØ
+    // ê²½ë¡œÂ·ê²Œì„í”Œë ˆì´ ë§ˆì»¤ì™€ ë™ì¼í•œ XY ì¢Œí‘œ ë³€í™˜ ê¸°ì¤€
     const float AreaPositionScale = 0.9f;
 
     const FVector2D AreaUsableSize(
@@ -343,7 +434,7 @@ void APCGZoneController::ApplyAreaPCG()
     {
         const FZoneAreaData& AreaData = CurrentZoneData.Areas[i];
 
-        // ±¸¿ª À¯Çü¿¡ ¸Â´Â BP Å¬·¡½º ¼±ÅÃ
+        // êµ¬ì—­ ìœ í˜•ì— ë§ëŠ” BP í´ë˜ìŠ¤ ì„ íƒ
         TSubclassOf<AActor> AreaClass = nullptr;
 
         switch (AreaData.AreaType)
@@ -380,10 +471,13 @@ void APCGZoneController::ApplyAreaPCG()
                 i,
                 static_cast<int32>(AreaData.AreaType)
             );
+
+            MarkZoneGenerationFailed(TEXT("Area PCG class is missing."));
+
             continue;
         }
 
-        // Á¤±ÔÈ­ ÁÂÇ¥ ¡æ ¿ùµå À§Ä¡
+        // ì •ê·œí™” ì¢Œí‘œ â†’ ì›”ë“œ ìœ„ì¹˜
         const float LocalX =
             (AreaData.NormalizedCenter.X - 0.5f) * AreaUsableSize.X;
 
@@ -393,7 +487,7 @@ void APCGZoneController::ApplyAreaPCG()
         const FVector AreaWorldLocation =
             CurrentZoneData.ZoneCenter + FVector(LocalX, LocalY, 0.0f);
 
-        // Á¤±ÔÈ­ ¹İÁö¸§ ¡æ ActorÀÇ XY ½ºÄÉÀÏ
+        // ì •ê·œí™” ë°˜ì§€ë¦„ â†’ Actorì˜ XY ìŠ¤ì¼€ì¼
         const float WorldRadius =
             AreaData.NormalizedRadius * BaseZoneLength;
 
@@ -424,10 +518,13 @@ void APCGZoneController::ApplyAreaPCG()
                 TEXT("[PCGZoneController] Failed to spawn Area PCG Actor. Index=%d"),
                 i
             );
+
+            MarkZoneGenerationFailed(TEXT("Failed to spawn an area actor."));
+
             continue;
         }
 
-        // ´ÙÀ½ Àç»ı¼º ½Ã Á¤¸®ÇÒ ¼ö ÀÖµµ·Ï ±â·Ï
+        // ë‹¤ìŒ ì¬ìƒì„± ì‹œ ì •ë¦¬í•  ìˆ˜ ìˆë„ë¡ ê¸°ë¡
         SpawnedAreaPCGActors.Add(AreaActor);
 
         UPCGComponent* AreaPCGComponent =
@@ -437,6 +534,9 @@ void APCGZoneController::ApplyAreaPCG()
         {
             //AreaPCGComponent->Cleanup();
             AreaPCGComponent->DirtyGenerated(EPCGComponentDirtyFlag::All);
+
+            ObservePCGGeneration(AreaPCGComponent);
+
             AreaPCGComponent->Generate(true);
         }
         else
@@ -448,6 +548,8 @@ void APCGZoneController::ApplyAreaPCG()
                 i,
                 *AreaActor->GetName()
             );
+
+            MarkZoneGenerationFailed(TEXT("Area PCG component is missing."));
         }
 
         UE_LOG(
@@ -480,7 +582,7 @@ void APCGZoneController::ClearSpawnedAreaPCGActors()
             continue;
         }
 
-        // PCG°¡ »ı¼ºÇÑ °á°ú¹°À» ¸ÕÀú Á¤¸®
+        // PCGê°€ ìƒì„±í•œ ê²°ê³¼ë¬¼ì„ ë¨¼ì € ì •ë¦¬
         UPCGComponent* PCGComponent =
             AreaActor->FindComponentByClass<UPCGComponent>();
 
@@ -599,73 +701,155 @@ void APCGZoneController::LoadSampleZoneJson()
 
 void APCGZoneController::RequestZoneDataFromBackend()
 {
-    if (TestNPCQuestion.IsEmpty())
+    const TArray<FString> Questions = { TestNPCQuestion };
+    const TArray<FString> Answers = { TestPlayerAnswer };
+
+    RequestZoneDataFromDialogue(Questions, Answers);
+}
+
+bool APCGZoneController::RequestZoneDataFromDialogue(
+    const TArray<FString>& Questions,
+    const TArray<FString>& Answers
+)
+{
+    if (bBackendRequestInProgress || bZoneGenerationInProgress)
     {
-        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] TestNPCQuestion is empty."));
-        return;
-    }
-    if (TestPlayerAnswer.IsEmpty())
-    {
-        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] TestPlayerAnswer is empty."));
-        return;
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[Backend] A request or zone generation is already in progress.")
+        );
+
+        return false;
     }
 
-    // Root JSON Object »ı¼º
-    TSharedPtr<FJsonObject> RequestRootObject = MakeShared<FJsonObject>();
+    if (BackendUrl.TrimStartAndEnd().IsEmpty()
+        || Questions.IsEmpty()
+        || Questions.Num() != Answers.Num())
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[Backend] Invalid URL or question/answer count.")
+        );
+        return false;
+    }
 
-    // dialogue ¹è¿­ »ı¼º
     TArray<TSharedPtr<FJsonValue>> DialogueArray;
 
-    // NPC ´ëÈ­ Object
-    TSharedPtr<FJsonObject> NPCDialogueObject = MakeShared<FJsonObject>();
-    NPCDialogueObject->SetStringField(TEXT("speaker"), TEXT("npc"));
-    NPCDialogueObject->SetStringField(TEXT("text"), TestNPCQuestion);
-
-    DialogueArray.Add(MakeShared<FJsonValueObject>(NPCDialogueObject));
-
-    // Player ´ëÈ­ Object
-    TSharedPtr<FJsonObject> PlayerDialogueObject = MakeShared<FJsonObject>();
-    PlayerDialogueObject->SetStringField(TEXT("speaker"), TEXT("player"));
-    PlayerDialogueObject->SetStringField(TEXT("text"), TestPlayerAnswer);
-
-    DialogueArray.Add(MakeShared<FJsonValueObject>(PlayerDialogueObject));
-
-    // Root¿¡ dialogue ¹è¿­ Ãß°¡
-    RequestRootObject->SetArrayField(TEXT("dialogue"), DialogueArray);
-
-    // JSON Object¸¦ FStringÀ¸·Î º¯È¯
-    FString RequestBody;
-    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&RequestBody);
-
-    if (!FJsonSerializer::Serialize(RequestRootObject.ToSharedRef(), Writer))
+    for (int32 Index = 0; Index < Questions.Num(); ++Index)
     {
-        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] Failed to serialize request JSON."));
-        return;
+        const FString Question = Questions[Index].TrimStartAndEnd();
+        const FString Answer = Answers[Index].TrimStartAndEnd();
+
+        if (Question.IsEmpty() || Answer.IsEmpty())
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("[Backend] Empty question or answer. Index=%d"),
+                Index
+            );
+            return false;
+        }
+
+        // NPC ì§ˆë¬¸
+        TSharedPtr<FJsonObject> QuestionObject =
+            MakeShared<FJsonObject>();
+
+        QuestionObject->SetStringField(
+            TEXT("speaker"),
+            TEXT("npc")
+        );
+        QuestionObject->SetStringField(TEXT("text"), Question);
+
+        DialogueArray.Add(
+            MakeShared<FJsonValueObject>(QuestionObject)
+        );
+
+        // í•´ë‹¹ ì§ˆë¬¸ì— ëŒ€í•œ í”Œë ˆì´ì–´ ë‹µë³€
+        TSharedPtr<FJsonObject> AnswerObject =
+            MakeShared<FJsonObject>();
+
+        AnswerObject->SetStringField(
+            TEXT("speaker"),
+            TEXT("player")
+        );
+        AnswerObject->SetStringField(TEXT("text"), Answer);
+
+        DialogueArray.Add(
+            MakeShared<FJsonValueObject>(AnswerObject)
+        );
     }
 
-    UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Backend Request Body:\n%s"), *RequestBody);
+    TSharedPtr<FJsonObject> RequestRootObject =
+        MakeShared<FJsonObject>();
 
+    RequestRootObject->SetArrayField(
+        TEXT("dialogue"),
+        DialogueArray
+    );
 
-    // HTTP ¿äÃ»ÇÏ±â
-    TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
+    FString RequestBody;
+
+    TSharedRef<TJsonWriter<>> Writer =
+        TJsonWriterFactory<>::Create(&RequestBody);
+
+    if (!FJsonSerializer::Serialize(
+        RequestRootObject.ToSharedRef(),
+        Writer))
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[Backend] Failed to serialize dialogue.")
+        );
+        return false;
+    }
+
+    TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest =
+        FHttpModule::Get().CreateRequest();
 
     HttpRequest->SetURL(BackendUrl);
     HttpRequest->SetVerb(TEXT("POST"));
-    HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+    HttpRequest->SetHeader(
+        TEXT("Content-Type"),
+        TEXT("application/json")
+    );
     HttpRequest->SetContentAsString(RequestBody);
+
+    HttpRequest->SetTimeout(
+        FMath::Max(BackendRequestTimeoutSeconds, 1.0f)
+    );
 
     HttpRequest->OnProcessRequestComplete().BindUObject(
         this,
         &APCGZoneController::OnZoneDataResponseReceived
     );
 
+    bBackendRequestInProgress = true;
+
     if (!HttpRequest->ProcessRequest())
     {
-        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] Failed to start HTTP request."));
-        return;
+        bBackendRequestInProgress = false;
+
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[Backend] Failed to start HTTP request.")
+        );
+        return false;
     }
 
-    UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] HTTP request sent to backend. URL=%s"), *BackendUrl);
+    UE_LOG(
+        LogTemp,
+        Log,
+        TEXT("[Backend] Request started. QuestionCount=%d URL=%s"),
+        Questions.Num(),
+        *BackendUrl
+    );
+
+    return true;
 }
 
 void APCGZoneController::MovePlayerToSpawnPoint()
@@ -751,7 +935,7 @@ bool APCGZoneController::ApplyZoneJsonString(const FString& JsonString)
         return false;
     }
 
-    // base_environment ÆÄ½Ì
+    // base_environment íŒŒì‹±
     const TSharedPtr<FJsonObject>* BaseEnvironmentObject = nullptr;
 
     if (RootObject->TryGetObjectField(TEXT("base_environment"), BaseEnvironmentObject) && BaseEnvironmentObject && BaseEnvironmentObject->IsValid())
@@ -783,7 +967,7 @@ bool APCGZoneController::ApplyZoneJsonString(const FString& JsonString)
         return false;
     }
 
-    // main_path ÆÄ½Ì
+    // main_path íŒŒì‹±
     const TSharedPtr<FJsonObject>* MainPathObject = nullptr;
 
     if (RootObject->TryGetObjectField(TEXT("main_path"), MainPathObject) && MainPathObject && MainPathObject->IsValid())
@@ -864,7 +1048,7 @@ bool APCGZoneController::ApplyZoneJsonString(const FString& JsonString)
         return false;
     }
 
-    // areas ÆÄ½Ì
+    // areas íŒŒì‹±
     const TArray<TSharedPtr<FJsonValue>>* AreasArray = nullptr;
 
     if (RootObject->TryGetArrayField(TEXT("areas"), AreasArray) && AreasArray)
@@ -950,8 +1134,8 @@ bool APCGZoneController::ApplyZoneJsonString(const FString& JsonString)
         return false;
     }
 
-    // ±âÁ¸ main_path µ¥ÀÌÅÍ¸¦ ´ÙÁß °æ·Î ¹è¿­¿¡ ¿¬°á
-    // JSONÀ» ´Ù½Ã Àû¿ëÇÒ ¶§ ÀÌÀü °æ·Î°¡ ´©ÀûµÇÁö ¾Êµµ·Ï ÃÊ±âÈ­
+    // ê¸°ì¡´ main_path ë°ì´í„°ë¥¼ ë‹¤ì¤‘ ê²½ë¡œ ë°°ì—´ì— ì—°ê²°
+    // JSONì„ ë‹¤ì‹œ ì ìš©í•  ë•Œ ì´ì „ ê²½ë¡œê°€ ëˆ„ì ë˜ì§€ ì•Šë„ë¡ ì´ˆê¸°í™”
     CurrentZoneData.Paths.Reset();
     CurrentZoneData.Paths.Add(CurrentZoneData.MainPath);
 
@@ -1002,58 +1186,80 @@ EZoneAreaType APCGZoneController::ParseAreaType(const FString& AreaTypeString) c
     return EZoneAreaType::Combat;
 }
 
-void APCGZoneController::OnZoneDataResponseReceived(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+void APCGZoneController::OnZoneDataResponseReceived(
+    FHttpRequestPtr Request,
+    FHttpResponsePtr Response,
+    bool bWasSuccessful
+)
 {
-    UE_LOG(
-        LogTemp,
-        Log,
-        TEXT("[PCGZoneController] Backend response received. Success=%s"),
-        bWasSuccessful ? TEXT("true") : TEXT("false")
-    );
-
     if (!bWasSuccessful || !Response.IsValid())
     {
-        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] Backend request failed or response is invalid."));
+        const FString Message =
+            TEXT("Backend request failed or timed out.");
+
+        UE_LOG(LogTemp, Warning, TEXT("[Backend] %s"), *Message);
+
+        FinishBackendRequest(false, Message);
         return;
     }
 
     const int32 ResponseCode = Response->GetResponseCode();
     const FString ResponseString = Response->GetContentAsString();
 
-    UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Backend Response Code: %d"), ResponseCode);
-    UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Backend Response Body:\n%s"), *ResponseString);
+    UE_LOG(
+        LogTemp,
+        Log,
+        TEXT("[Backend] Response Code=%d"),
+        ResponseCode
+    );
 
     if (ResponseCode < 200 || ResponseCode >= 300)
     {
-        UE_LOG(
-            LogTemp,
-            Warning,
-            TEXT("[PCGZoneController] Backend returned non-success status code: %d"),
+        const FString Message = FString::Printf(
+            TEXT("Backend returned HTTP %d."),
             ResponseCode
         );
+
+        UE_LOG(LogTemp, Warning, TEXT("[Backend] %s"), *Message);
+
+        FinishBackendRequest(false, Message);
         return;
     }
 
-    if (ResponseString.IsEmpty())
+    if (ResponseString.TrimStartAndEnd().IsEmpty())
     {
-        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] Backend response body is empty."));
+        const FString Message =
+            TEXT("Backend response was empty.");
+
+        UE_LOG(LogTemp, Warning, TEXT("[Backend] %s"), *Message);
+
+        FinishBackendRequest(false, Message);
         return;
     }
 
     if (!ApplyZoneJsonString(ResponseString))
     {
-        UE_LOG(LogTemp, Warning, TEXT("[PCGZoneController] Failed to apply backend response JSON."));
+        const FString Message =
+            TEXT("Backend response contained invalid zone data.");
+
+        UE_LOG(LogTemp, Warning, TEXT("[Backend] %s"), *Message);
+
+        FinishBackendRequest(false, Message);
         return;
     }
 
-    UE_LOG(LogTemp, Log, TEXT("[PCGZoneController] Backend zone JSON applied successfully."));
+    bWaitingForBackendPCG = true;
+
+    OnZoneRequestStatusChanged.Broadcast(
+        TEXT("Building your map. Please wait...")
+    );
 
     GenerateZone();
 }
 
 void APCGZoneController::ClearSpawnedGameplayMarkers()
 {
-    // ÀÌÀü ½ºÆ÷³ÊÀÇ ÀüÅõ ¿Ï·á ÀÌº¥Æ® ¿¬°á ÇØÁ¦
+    // ì´ì „ ìŠ¤í¬ë„ˆì˜ ì „íˆ¬ ì™„ë£Œ ì´ë²¤íŠ¸ ì—°ê²° í•´ì œ
     for (AActor* SpawnerActor : SpawnedEnemySpawners)
     {
         if (IsValid(SpawnerActor))
@@ -1068,12 +1274,12 @@ void APCGZoneController::ClearSpawnedGameplayMarkers()
         }
     }
 
-    // ÀÌÀü ZoneÀÇ ÀüÅõ ÁøÇà »óÅÂ ÃÊ±âÈ­
+    // ì´ì „ Zoneì˜ ì „íˆ¬ ì§„í–‰ ìƒíƒœ ì´ˆê¸°í™”
     ExpectedCombatAreaCount = 0;
     RegisteredCombatSpawners.Empty();
     ClearedCombatSpawners.Empty();
 
-    // ±âÁ¸ °ÔÀÓÇÃ·¹ÀÌ ¸¶Ä¿ Á¦°Å
+    // ê¸°ì¡´ ê²Œì„í”Œë ˆì´ ë§ˆì»¤ ì œê±°
     for (AActor* Marker : SpawnedGameplayMarkers)
     {
         if (IsValid(Marker))
@@ -1087,8 +1293,8 @@ void APCGZoneController::ClearSpawnedGameplayMarkers()
     SpawnPointActor = nullptr;
     GoalPointActor = nullptr;
 
-    // ±âÁ¸ ½ºÆ÷³Ê Á¦°Å
-    // ½ºÆ÷³ÊÀÇ EndPlay()¿¡¼­ ÀÚ½ÅÀÌ »ı¼ºÇÑ Àûµµ Á¤¸®ÇÑ´Ù.
+    // ê¸°ì¡´ ìŠ¤í¬ë„ˆ ì œê±°
+    // ìŠ¤í¬ë„ˆì˜ EndPlay()ì—ì„œ ìì‹ ì´ ìƒì„±í•œ ì ë„ ì •ë¦¬í•œë‹¤.
     for (AActor* SpawnerActor : SpawnedEnemySpawners)
     {
         if (IsValid(SpawnerActor))
@@ -1108,7 +1314,7 @@ void APCGZoneController::ApplyGameplayMarkers()
         return;
     }
 
-    // JSON¿¡¼­ ¿ä±¸ÇÏ´Â ÀüÃ¼ Combat ±¸¿ª ¼ö °è»ê
+    // JSONì—ì„œ ìš”êµ¬í•˜ëŠ” ì „ì²´ Combat êµ¬ì—­ ìˆ˜ ê³„ì‚°
     ExpectedCombatAreaCount = 0;
 
     for (const FZoneAreaData& AreaData : CurrentZoneData.Areas)
@@ -1126,7 +1332,7 @@ void APCGZoneController::ApplyGameplayMarkers()
         ExpectedCombatAreaCount
     );
 
-    // ±æ ¹× Area PCG¿Í µ¿ÀÏÇÑ À§Ä¡ º¯È¯ ±âÁØ
+    // ê¸¸ ë° Area PCGì™€ ë™ì¼í•œ ìœ„ì¹˜ ë³€í™˜ ê¸°ì¤€
     const float AreaPositionScale = 0.9f;
 
     const FVector2D AreaUsableSize(
@@ -1168,7 +1374,7 @@ void APCGZoneController::ApplyGameplayMarkers()
         const float LocalY =
             (AreaData.NormalizedCenter.Y - 0.5f) * AreaUsableSize.Y;
 
-        // ¸¶Ä¿ ³ôÀÌ´Â ±âÁ¸Ã³·³ ZoneCenter.Z »ç¿ë
+        // ë§ˆì»¤ ë†’ì´ëŠ” ê¸°ì¡´ì²˜ëŸ¼ ZoneCenter.Z ì‚¬ìš©
         const FVector SpawnLocation =
             CurrentZoneData.ZoneCenter + FVector(LocalX, LocalY, 0.0f);
 
@@ -1219,7 +1425,7 @@ void APCGZoneController::ApplyGameplayMarkers()
             );
         }
 
-        // Combat ±¸¿ª¸¶´Ù Àû ½ºÆ÷³Ê »ı¼º
+        // Combat êµ¬ì—­ë§ˆë‹¤ ì  ìŠ¤í¬ë„ˆ ìƒì„±
         if (AreaData.AreaType == EZoneAreaType::Combat && EnemySpawnerClass)
         {
             FActorSpawnParameters EnemySpawnerSpawnParams;
@@ -1287,7 +1493,7 @@ void APCGZoneController::ApplyGameplayMarkers()
 
 void APCGZoneController::HandleCombatAreaCleared(AZoneEnemySpawner* ClearedSpawner)
 {
-    // ÇöÀç Zone¿¡ Á¤»ó µî·ÏµÈ ½ºÆ÷³ÊÀÎÁö È®ÀÎ
+    // í˜„ì¬ Zoneì— ì •ìƒ ë“±ë¡ëœ ìŠ¤í¬ë„ˆì¸ì§€ í™•ì¸
     if (!IsValid(ClearedSpawner) ||
         !RegisteredCombatSpawners.Contains(ClearedSpawner))
     {
@@ -1299,7 +1505,7 @@ void APCGZoneController::HandleCombatAreaCleared(AZoneEnemySpawner* ClearedSpawn
         return;
     }
 
-    // °°Àº ½ºÆ÷³ÊÀÇ ¿Ï·á ÀÌº¥Æ®´Â ÇÑ ¹ø¸¸ Ã³¸®
+    // ê°™ì€ ìŠ¤í¬ë„ˆì˜ ì™„ë£Œ ì´ë²¤íŠ¸ëŠ” í•œ ë²ˆë§Œ ì²˜ë¦¬
     if (ClearedCombatSpawners.Contains(ClearedSpawner))
     {
         return;
@@ -1321,7 +1527,7 @@ void APCGZoneController::HandleCombatAreaCleared(AZoneEnemySpawner* ClearedSpawn
 
 void APCGZoneController::UpdateGoalActivation()
 {
-    // JSON¿¡¼­ ¿ä±¸ÇÑ ¼ö¸¸Å­ ½ºÆ÷³Ê°¡ µî·ÏµÇ¾î¾ß ÇÑ´Ù.
+    // JSONì—ì„œ ìš”êµ¬í•œ ìˆ˜ë§Œí¼ ìŠ¤í¬ë„ˆê°€ ë“±ë¡ë˜ì–´ì•¼ í•œë‹¤.
     if (RegisteredCombatSpawners.Num() != ExpectedCombatAreaCount)
     {
         UE_LOG(
@@ -1334,7 +1540,7 @@ void APCGZoneController::UpdateGoalActivation()
         return;
     }
 
-    // ¸ğµç ÀüÅõ ±¸¿ªÀ» ¿Ï·áÇÏ±â Àü¿¡´Â GoalÀ» ¿­Áö ¾Ê´Â´Ù.
+    // ëª¨ë“  ì „íˆ¬ êµ¬ì—­ì„ ì™„ë£Œí•˜ê¸° ì „ì—ëŠ” Goalì„ ì—´ì§€ ì•ŠëŠ”ë‹¤.
     if (ClearedCombatSpawners.Num() != ExpectedCombatAreaCount)
     {
         return;
@@ -1363,5 +1569,307 @@ void APCGZoneController::UpdateGoalActivation()
         LogTemp,
         Log,
         TEXT("[PCGZoneController] All combat areas cleared. Goal activated.")
+    );
+}
+
+void APCGZoneController::FinishBackendRequest(
+    bool bSuccess,
+    const FString& Message
+)
+{
+    bBackendRequestInProgress = false;
+
+    OnZoneRequestFinished.Broadcast(bSuccess, Message);
+}
+
+void APCGZoneController::ObservePCGGeneration(
+    UPCGComponent* PCGComponent
+)
+{
+    if (!bZoneGenerationInProgress || !IsValid(PCGComponent))
+    {
+        return;
+    }
+
+    if (!PCGComponent->GetGraphInstance())
+    {
+        MarkZoneGenerationFailed(
+            TEXT("A PCG component has no graph assigned.")
+        );
+        return;
+    }
+
+    const TWeakObjectPtr<UPCGComponent> ComponentKey(PCGComponent);
+
+    // ê°™ì€ ì»´í¬ë„ŒíŠ¸ ì¤‘ë³µ ë“±ë¡ ë°©ì§€
+    if (PendingPCGComponents.Contains(ComponentKey))
+    {
+        return;
+    }
+
+    PendingPCGComponents.Add(ComponentKey);
+    ++TotalPCGComponentCount;
+
+    PCGComponent->OnPCGGraphGeneratedExternal.AddUniqueDynamic(
+        this,
+        &APCGZoneController::HandlePCGGenerationCompleted
+    );
+
+    PCGComponent->OnPCGGraphCancelledExternal.AddUniqueDynamic(
+        this,
+        &APCGZoneController::HandlePCGGenerationCancelled
+    );
+}
+
+void APCGZoneController::HandlePCGGenerationCompleted(
+    UPCGComponent* PCGComponent
+)
+{
+    const TWeakObjectPtr<UPCGComponent> ComponentKey(PCGComponent);
+
+    if (!bZoneGenerationInProgress
+        || !PendingPCGComponents.Contains(ComponentKey))
+    {
+        return;
+    }
+
+    PendingPCGComponents.Remove(ComponentKey);
+
+    PCGComponent->OnPCGGraphGeneratedExternal.RemoveDynamic(
+        this,
+        &APCGZoneController::HandlePCGGenerationCompleted
+    );
+
+    PCGComponent->OnPCGGraphCancelledExternal.RemoveDynamic(
+        this,
+        &APCGZoneController::HandlePCGGenerationCancelled
+    );
+
+    UE_LOG(
+        LogTemp,
+        Log,
+        TEXT("[ZoneGeneration] PCG completed. Actor=%s Progress=%d/%d"),
+        *GetNameSafe(PCGComponent->GetOwner()),
+        TotalPCGComponentCount - PendingPCGComponents.Num(),
+        TotalPCGComponentCount
+    );
+
+    TryFinishZoneGeneration();
+}
+
+void APCGZoneController::HandlePCGGenerationCancelled(
+    UPCGComponent* PCGComponent
+)
+{
+    const TWeakObjectPtr<UPCGComponent> ComponentKey(PCGComponent);
+
+    if (!bZoneGenerationInProgress
+        || !PendingPCGComponents.Contains(ComponentKey))
+    {
+        return;
+    }
+
+    PendingPCGComponents.Remove(ComponentKey);
+    bZoneGenerationFailed = true;
+
+    PCGComponent->OnPCGGraphGeneratedExternal.RemoveDynamic(
+        this,
+        &APCGZoneController::HandlePCGGenerationCompleted
+    );
+
+    PCGComponent->OnPCGGraphCancelledExternal.RemoveDynamic(
+        this,
+        &APCGZoneController::HandlePCGGenerationCancelled
+    );
+
+    UE_LOG(
+        LogTemp,
+        Warning,
+        TEXT("[ZoneGeneration] PCG cancelled. Actor=%s"),
+        *GetNameSafe(PCGComponent->GetOwner())
+    );
+
+    TryFinishZoneGeneration();
+}
+
+void APCGZoneController::TryFinishZoneGeneration()
+{
+    // ìƒì„± ì¤‘ì´ ì•„ë‹ˆê±°ë‚˜, ì•„ì§ ëŒ€ìƒì„ ë“±ë¡ ì¤‘ì´ê±°ë‚˜,
+    // ì™„ë£Œë˜ì§€ ì•Šì€ PCGê°€ ë‚¨ì•„ ìˆìœ¼ë©´ ê¸°ë‹¤ë¦¼
+    if (!bZoneGenerationInProgress
+        || bRegisteringPCGComponents
+        || !PendingPCGComponents.IsEmpty())
+    {
+        return;
+    }
+
+    GetWorldTimerManager().ClearTimer(
+        PCGGenerationTimeoutHandle
+    );
+
+    const bool bGameplayReady =
+        IsValid(SpawnPointActor)
+        && IsValid(GoalPointActor)
+        && RegisteredCombatSpawners.Num() == ExpectedCombatAreaCount;
+
+    if (!bGameplayReady)
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("[ZoneGeneration] Required gameplay markers or spawners are missing.")
+        );
+    }
+
+    const bool bSuccess =
+        !bZoneGenerationFailed
+        && TotalPCGComponentCount > 0
+        && bGameplayReady;
+
+    const bool bNotifyBackendResult = bWaitingForBackendPCG;
+
+    bZoneGenerationInProgress = false;
+    bWaitingForBackendPCG = false;
+
+    UE_LOG(
+        LogTemp,
+        Log,
+        TEXT("[ZoneGeneration] Finished. Success=%s Total=%d"),
+        bSuccess ? TEXT("true") : TEXT("false"),
+        TotalPCGComponentCount
+    );
+
+    // ë¡œì»¬ ìƒì„±ì€ ë¡œê·¸ë§Œ ì¶œë ¥í•˜ê³ ,
+    // ë°±ì—”ë“œ ìš”ì²­ìœ¼ë¡œ ì‹œì‘í•œ ìƒì„±ì€ ê²°ê³¼ë„ ì „ë‹¬
+    if (bNotifyBackendResult)
+    {
+        FinishBackendRequest(
+            bSuccess,
+            bSuccess
+            ? TEXT("Zone generation completed.")
+            : TEXT("Zone generation failed.")
+        );
+    }
+}
+
+void APCGZoneController::ClearPCGGenerationTracking(
+    bool bCancelPending
+)
+{
+    GetWorldTimerManager().ClearTimer(
+        PCGGenerationTimeoutHandle
+    );
+
+    // ì·¨ì†Œ ì¤‘ ì´ë²¤íŠ¸ê°€ ë°œìƒí•´ë„ ì›ë³¸ ëª©ë¡ì— ì˜í–¥ì´ ì—†ë„ë¡ ë³µì‚¬
+    const TArray<TWeakObjectPtr<UPCGComponent>> Components =
+        PendingPCGComponents.Array();
+
+    PendingPCGComponents.Reset();
+
+    // ë¨¼ì € ëª¨ë“  ì´ë²¤íŠ¸ ì—°ê²° í•´ì œ
+    for (const TWeakObjectPtr<UPCGComponent>& ComponentRef : Components)
+    {
+        UPCGComponent* PCGComponent = ComponentRef.Get();
+
+        if (!IsValid(PCGComponent))
+        {
+            continue;
+        }
+
+        PCGComponent->OnPCGGraphGeneratedExternal.RemoveDynamic(
+            this,
+            &APCGZoneController::HandlePCGGenerationCompleted
+        );
+
+        PCGComponent->OnPCGGraphCancelledExternal.RemoveDynamic(
+            this,
+            &APCGZoneController::HandlePCGGenerationCancelled
+        );
+    }
+
+    if (!bCancelPending || !GetWorld())
+    {
+        return;
+    }
+
+    UPCGSubsystem* PCGSubsystem =
+        GetWorld()->GetSubsystem<UPCGSubsystem>();
+
+    if (!PCGSubsystem)
+    {
+        return;
+    }
+
+    // ì•„ì§ ë‚¨ì•„ ìˆëŠ” ìƒì„± ì‘ì—… ì·¨ì†Œ
+    for (const TWeakObjectPtr<UPCGComponent>& ComponentRef : Components)
+    {
+        if (UPCGComponent* PCGComponent = ComponentRef.Get())
+        {
+            PCGSubsystem->CancelGeneration(PCGComponent);
+        }
+    }
+}
+
+void APCGZoneController::HandlePCGGenerationTimeout()
+{
+    if (!bZoneGenerationInProgress)
+    {
+        return;
+    }
+
+    UE_LOG(
+        LogTemp,
+        Warning,
+        TEXT("[ZoneGeneration] Timed out. Pending=%d Total=%d"),
+        PendingPCGComponents.Num(),
+        TotalPCGComponentCount
+    );
+
+    const bool bNotifyBackendResult = bWaitingForBackendPCG;
+
+    // ì·¨ì†Œ ì´ë²¤íŠ¸ê°€ ë“¤ì–´ì™€ë„ ì™„ë£Œë¡œ ì²˜ë¦¬í•˜ì§€ ì•Šë„ë¡ ë¨¼ì € ì¢…ë£Œ
+    bZoneGenerationInProgress = false;
+    bRegisteringPCGComponents = false;
+    bZoneGenerationFailed = true;
+    bWaitingForBackendPCG = false;
+
+    ClearPCGGenerationTracking(true);
+
+    if (bNotifyBackendResult)
+    {
+        FinishBackendRequest(
+            false,
+            TEXT("Map generation timed out.")
+        );
+    }
+}
+
+void APCGZoneController::EndPlay(
+    const EEndPlayReason::Type EndPlayReason
+)
+{
+    bZoneGenerationInProgress = false;
+    bRegisteringPCGComponents = false;
+    bWaitingForBackendPCG = false;
+
+    ClearPCGGenerationTracking(true);
+
+    Super::EndPlay(EndPlayReason);
+}
+
+void APCGZoneController::MarkZoneGenerationFailed(
+    const FString& Reason
+)
+{
+    if (bZoneGenerationInProgress)
+    {
+        bZoneGenerationFailed = true;
+    }
+
+    UE_LOG(
+        LogTemp,
+        Warning,
+        TEXT("[ZoneGeneration] Preparation failed: %s"),
+        *Reason
     );
 }

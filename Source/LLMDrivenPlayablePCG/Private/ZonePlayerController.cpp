@@ -17,6 +17,9 @@
 
 #include "ZoneDialogueWidget.h"
 
+#include "PCGZoneController.h"
+#include "Kismet/GameplayStatics.h"
+
 void AZonePlayerController::BeginPlay()
 {
 	Super::BeginPlay();
@@ -193,6 +196,90 @@ void AZonePlayerController::EndNPCDialogue()
     );
 }
 
+void AZonePlayerController::RequestZoneFromDialogue()
+{
+    if (!bInDialogue
+        || bDialogueRequestInProgress
+        || !IsValid(DialogueWidget))
+    {
+        return;
+    }
+
+    TArray<FString> Questions;
+    TArray<FString> Answers;
+
+    if (!DialogueWidget->GetCompletedDialogue(Questions, Answers))
+    {
+        return;
+    }
+
+    APCGZoneController* ZoneController =
+        Cast<APCGZoneController>(
+            UGameplayStatics::GetActorOfClass(
+                this,
+                APCGZoneController::StaticClass()
+            )
+        );
+
+    if (!IsValid(ZoneController))
+    {
+        DialogueWidget->SetGenerationPending(
+            false,
+            TEXT("Zone controller not found.")
+        );
+        return;
+    }
+
+    // 이전 결과 알림 연결 정리
+    if (RequestedZoneController.IsValid())
+    {
+        RequestedZoneController->OnZoneRequestFinished.RemoveAll(this);
+        RequestedZoneController->OnZoneRequestStatusChanged.RemoveAll(this);
+    }
+
+    RequestedZoneController = ZoneController;
+
+    // 요청 전에 결과를 받을 함수 연결
+    ZoneController->OnZoneRequestFinished.AddUObject(
+        this,
+        &AZonePlayerController::HandleZoneRequestFinished
+    );
+
+    ZoneController->OnZoneRequestStatusChanged.AddUObject(
+        this,
+        &AZonePlayerController::HandleZoneRequestStatusChanged
+    );
+
+    bDialogueRequestInProgress = true;
+
+    DialogueWidget->SetGenerationPending(
+        true,
+        TEXT("Waiting for the server. Please wait...")
+    );
+
+    const bool bStarted =
+        ZoneController->RequestZoneDataFromDialogue(
+            Questions,
+            Answers
+        );
+
+    // HTTP 요청을 시작하지 못한 경우
+    if (!bStarted)
+    {
+        ZoneController->OnZoneRequestFinished.RemoveAll(this);
+        ZoneController->OnZoneRequestStatusChanged.RemoveAll(this);
+
+        RequestedZoneController.Reset();
+
+        bDialogueRequestInProgress = false;
+
+        DialogueWidget->SetGenerationPending(
+            false,
+            TEXT("Could not start the request. Please try again.")
+        );
+    }
+}
+
 void AZonePlayerController::FinishDialogueEntry()
 {
     if (!bInDialogue)
@@ -306,6 +393,69 @@ void AZonePlayerController::FadeInDialogue()
     );
 }
 
+void AZonePlayerController::HandleZoneRequestFinished(
+    bool bSuccess,
+    const FString& Message
+)
+{
+    if (!bDialogueRequestInProgress)
+    {
+        return;
+    }
+
+    bDialogueRequestInProgress = false;
+
+    APCGZoneController* ZoneController =
+        RequestedZoneController.Get();
+
+    if (IsValid(ZoneController))
+    {
+        ZoneController->OnZoneRequestFinished.RemoveAll(this);
+        ZoneController->OnZoneRequestStatusChanged.RemoveAll(this);
+    }
+
+    RequestedZoneController.Reset();
+
+    if (!bSuccess)
+    {
+        // 답변은 유지하고 생성 버튼을 다시 활성화
+        if (IsValid(DialogueWidget))
+        {
+            DialogueWidget->SetGenerationPending(
+                false,
+                Message + TEXT(" Click Generate to retry.")
+            );
+        }
+
+        return;
+    }
+
+    // 맵 생성 함수 호출까지 완료된 상태
+    EndNPCDialogue();
+
+    if (IsValid(ZoneController))
+    {
+        ZoneController->MovePlayerToSpawnPoint();
+    }
+}
+
+void AZonePlayerController::HandleZoneRequestStatusChanged(
+    const FString& Message
+)
+{
+    if (!bInDialogue
+        || !bDialogueRequestInProgress
+        || !IsValid(DialogueWidget))
+    {
+        return;
+    }
+
+    DialogueWidget->SetGenerationPending(
+        true,
+        Message
+    );
+}
+
 void AZonePlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
     if (IsValid(PlayerHUD))
@@ -322,6 +472,15 @@ void AZonePlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
         DialogueWidget->RemoveFromParent();
         DialogueWidget = nullptr;
     }
+
+    if (RequestedZoneController.IsValid())
+    {
+        RequestedZoneController->OnZoneRequestFinished.RemoveAll(this);
+        RequestedZoneController->OnZoneRequestStatusChanged.RemoveAll(this);
+    }
+
+    RequestedZoneController.Reset();
+    bDialogueRequestInProgress = false;
 
     Super::EndPlay(EndPlayReason);
 }
