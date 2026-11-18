@@ -7,6 +7,8 @@
 #include "PCGSubsystem.h"
 
 #include "Components/SplineComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/BoxComponent.h"
 
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
@@ -27,6 +29,7 @@
 
 #include "TimerManager.h"
 #include "Engine/World.h"
+#include "Helpers/PCGGraphParametersHelpers.h"
 
 // Sets default values
 APCGZoneController::APCGZoneController()
@@ -79,12 +82,13 @@ void APCGZoneController::GenerateZone()
 
     UpdateZoneBoundsFromBaseEnvironment();
 
-    ApplyBaseEnvironmentPCG();
     ApplyPathPCG();
     ApplyAreaPCG();
 
     ClearSpawnedGameplayMarkers();
     ApplyGameplayMarkers();
+
+    ApplyBaseEnvironmentPCG();
 
     // 이제 모든 생성 대상의 등록이 끝남
     bRegisteringPCGComponents = false;
@@ -353,6 +357,54 @@ void APCGZoneController::ApplyPathPCG()
 
         SplineComponent->UpdateSpline();
 
+        UPCGGraphInstance* PathGraphInstance =
+            PCGComponent->GetGraphInstance();
+
+        if (!IsValid(PathGraphInstance))
+        {
+            MarkZoneGenerationFailed(
+                TEXT("Path PCG graph instance is missing.")
+            );
+            continue;
+        }
+
+        const float SafeBaseWidth =
+            FMath::Max(PathAssetBaseWidth, 1.0f);
+
+        const float SafePathWidth =
+            FMath::Max(PathData.PathWidth, 1.0f);
+
+        const float WidthScale = SafePathWidth / SafeBaseWidth;
+
+        // 길이와 높이는 유지하고 가로 폭만 조절
+        const FVector PathScaleValue(
+            1.0f,
+            WidthScale,
+            1.0f
+        );
+
+        UPCGGraphParametersHelpers::SetVectorParameter(
+            PathGraphInstance,
+            FName(TEXT("PathScale")),
+            PathScaleValue
+        );
+
+        UE_LOG(
+            LogTemp,
+            Log,
+            TEXT("[PathWidth] Index=%d Width=%.1f BaseWidth=%.1f ScaleY=%.3f"),
+            PathIndex,
+            SafePathWidth,
+            SafeBaseWidth,
+            WidthScale
+        );
+
+        AddPathEnvironmentExclusion(
+            PathActor,
+            SplineComponent,
+            SafePathWidth
+        );
+
         PCGComponent->DirtyGenerated(EPCGComponentDirtyFlag::All);
 
         ObservePCGGeneration(PCGComponent);
@@ -617,8 +669,8 @@ void APCGZoneController::LoadSampleZoneJson()
   "theme": "desert",
   "base_environment": {
     "tree_density": 0.05,
-    "rock_density": 0.15,
-    "grass_density": 0.1
+    "rock_density": 0.65,
+    "grass_density": 0.5
   },
   "main_path": {
     "path_type": "main",
@@ -1534,14 +1586,24 @@ void APCGZoneController::ApplyGameplayMarkers()
         {
             SpawnedGameplayMarkers.Add(SpawnedMarker);
 
-            if (AZoneDangerArea* DangerArea = Cast<AZoneDangerArea>(SpawnedMarker))
-            {
-                const float ZoneShortSide = FMath::Min(
-                    CurrentZoneData.ZoneSize.X,
-                    CurrentZoneData.ZoneSize.Y
-                );
+            const float ZoneShortSide = FMath::Min(
+                CurrentZoneData.ZoneSize.X,
+                CurrentZoneData.ZoneSize.Y
+            );
 
-                DangerArea->SetDangerRadius(AreaData.NormalizedRadius * ZoneShortSide);
+            const float AreaRadius =
+                AreaData.NormalizedRadius * ZoneShortSide;
+
+            if (AZoneDangerArea* DangerArea =
+                Cast<AZoneDangerArea>(SpawnedMarker))
+            {
+                // Danger는 기존 피해 판정 캡슐을 사용
+                DangerArea->SetDangerRadius(AreaRadius);
+            }
+            else
+            {
+                // Spawn·Combat·Goal은 환경 제외용 캡슐 추가
+                AddEnvironmentExclusion(SpawnedMarker, AreaRadius);
             }
 
             if (AreaData.AreaType == EZoneAreaType::Spawn)
@@ -2027,5 +2089,199 @@ void APCGZoneController::MarkZoneGenerationFailed(
         Warning,
         TEXT("[ZoneGeneration] Preparation failed: %s"),
         *Reason
+    );
+}
+
+void APCGZoneController::AddEnvironmentExclusion(
+    AActor* MarkerActor,
+    float Radius
+)
+{
+    if (!IsValid(MarkerActor)
+        || !IsValid(MarkerActor->GetRootComponent()))
+    {
+        MarkZoneGenerationFailed(
+            TEXT("Environment exclusion marker has no valid root.")
+        );
+        return;
+    }
+
+    const float SafeRadius = FMath::Max(Radius, 1.0f);
+
+    UCapsuleComponent* ExclusionShape =
+        NewObject<UCapsuleComponent>(MarkerActor);
+
+    ExclusionShape->SetupAttachment(
+        MarkerActor->GetRootComponent()
+    );
+
+    ExclusionShape->SetRelativeLocation(FVector::ZeroVector);
+
+    // 마커의 스케일과 관계없이 지정한 반지름 사용
+    ExclusionShape->SetAbsolute(false, false, true);
+
+    // 현재 지면까지 포함하도록 세로로 넉넉하게 설정
+    ExclusionShape->InitCapsuleSize(
+        SafeRadius,
+        SafeRadius + 600.0f
+    );
+
+    // 플레이어나 적의 이동·구역 판정에 영향을 주지 않음
+    ExclusionShape->SetCollisionEnabled(
+        ECollisionEnabled::QueryOnly
+    );
+    ExclusionShape->SetCollisionResponseToAllChannels(ECR_Ignore);
+    ExclusionShape->SetGenerateOverlapEvents(false);
+    ExclusionShape->SetCanEverAffectNavigation(false);
+
+    ExclusionShape->ComponentTags.AddUnique(
+        FName(TEXT("ZoneExclusionShape"))
+    );
+
+    MarkerActor->AddInstanceComponent(ExclusionShape);
+    ExclusionShape->RegisterComponent();
+
+    MarkerActor->Tags.AddUnique(
+        FName(TEXT("ZoneEnvExclusion"))
+    );
+
+    UE_LOG(
+        LogTemp,
+        Log,
+        TEXT("[EnvironmentExclusion] Added. Actor=%s Radius=%.1f"),
+        *MarkerActor->GetName(),
+        SafeRadius
+    );
+}
+
+void APCGZoneController::AddPathEnvironmentExclusion(
+    AActor* PathActor,
+    USplineComponent* SplineComponent,
+    float PathWidth
+)
+{
+    if (!IsValid(PathActor)
+        || !IsValid(SplineComponent)
+        || !IsValid(PathActor->GetRootComponent()))
+    {
+        MarkZoneGenerationFailed(
+            TEXT("Path exclusion requires a valid actor and spline.")
+        );
+        return;
+    }
+
+    const float SplineLength = SplineComponent->GetSplineLength();
+
+    if (!FMath::IsFinite(SplineLength)
+        || SplineLength <= KINDA_SMALL_NUMBER
+        || !FMath::IsFinite(PathWidth)
+        || PathWidth <= 0.0f)
+    {
+        MarkZoneGenerationFailed(
+            TEXT("Path exclusion has invalid length or width.")
+        );
+        return;
+    }
+
+    const float Padding = FMath::Max(PathExclusionPadding, 0.0f);
+    const float HalfWidth = PathWidth * 0.5f + Padding;
+
+    const int32 SegmentCount = FMath::Max(
+        FMath::CeilToInt(SplineLength / 200.0f),
+        1
+    );
+
+    const float SegmentDistance =
+        SplineLength / static_cast<float>(SegmentCount);
+
+    int32 CreatedCount = 0;
+
+    for (int32 Index = 0; Index < SegmentCount; ++Index)
+    {
+        const FVector Start =
+            SplineComponent->GetLocationAtDistanceAlongSpline(
+                SegmentDistance * Index,
+                ESplineCoordinateSpace::World
+            );
+
+        const FVector End =
+            SplineComponent->GetLocationAtDistanceAlongSpline(
+                SegmentDistance * (Index + 1),
+                ESplineCoordinateSpace::World
+            );
+
+        FVector Direction = End - Start;
+        Direction.Z = 0.0f;
+
+        const float HorizontalLength = Direction.Size();
+
+        if (HorizontalLength <= KINDA_SMALL_NUMBER)
+        {
+            continue;
+        }
+
+        const FVector Center = (Start + End) * 0.5f;
+
+        UBoxComponent* ExclusionBox =
+            NewObject<UBoxComponent>(PathActor);
+
+        ExclusionBox->SetupAttachment(
+            PathActor->GetRootComponent()
+        );
+
+        // 지정한 폭을 월드 단위로 사용
+        ExclusionBox->SetAbsolute(false, false, true);
+
+        ExclusionBox->SetWorldLocationAndRotation(
+            Center,
+            Direction.Rotation()
+        );
+
+        // 짧은 박스들을 겹쳐서 곡선 구간도 비움
+        ExclusionBox->InitBoxExtent(
+            FVector(
+                HorizontalLength * 0.5f + Padding,
+                HalfWidth,
+                1000.0f
+            )
+        );
+
+        ExclusionBox->SetCollisionEnabled(
+            ECollisionEnabled::QueryOnly
+        );
+        ExclusionBox->SetCollisionResponseToAllChannels(ECR_Ignore);
+        ExclusionBox->SetGenerateOverlapEvents(false);
+        ExclusionBox->SetCanEverAffectNavigation(false);
+
+        ExclusionBox->ComponentTags.AddUnique(
+            FName(TEXT("ZoneExclusionShape"))
+        );
+
+        PathActor->AddInstanceComponent(ExclusionBox);
+        ExclusionBox->RegisterComponent();
+
+        ++CreatedCount;
+    }
+
+    if (CreatedCount == 0)
+    {
+        MarkZoneGenerationFailed(
+            TEXT("No path exclusion boxes were created.")
+        );
+        return;
+    }
+
+    PathActor->Tags.AddUnique(
+        FName(TEXT("ZoneEnvExclusion"))
+    );
+
+    UE_LOG(
+        LogTemp,
+        Log,
+        TEXT("[PathExclusion] Created. Actor=%s Boxes=%d Width=%.1f Padding=%.1f"),
+        *PathActor->GetName(),
+        CreatedCount,
+        PathWidth,
+        Padding
     );
 }

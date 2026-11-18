@@ -10,6 +10,8 @@
 #include "PCGZoneController.generated.h"
 
 class UPCGComponent;
+class USplineComponent;
+
 class IHttpRequest;
 class IHttpResponse;
 
@@ -170,6 +172,13 @@ public:
     // 경로와 게임플레이 마커가 사용하는 기준 높이
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Zone Generation")
     float ZoneBaseHeight = 407.0f;
+
+    UPROPERTY(EditAnywhere, Category = "Zone|Path", meta = (ClampMin = "1.0"))
+    float PathAssetBaseWidth = 390.0f;
+
+    UPROPERTY(EditAnywhere, Category = "Zone|Path",
+        meta = (ClampMin = "0.0"))
+    float PathExclusionPadding = 150.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Backend")
     FString BackendUrl = TEXT("http://127.0.0.1:8000/generate-zone");
@@ -334,4 +343,12 @@ private:
     void ClearPCGGenerationTracking(bool bCancelPending);
 
     void MarkZoneGenerationFailed(const FString& Reason);
+
+    void AddEnvironmentExclusion(AActor* MarkerActor, float Radius);
+
+    void AddPathEnvironmentExclusion(
+        AActor* PathActor,
+        USplineComponent* SplineComponent,
+        float PathWidth
+    );
 };
