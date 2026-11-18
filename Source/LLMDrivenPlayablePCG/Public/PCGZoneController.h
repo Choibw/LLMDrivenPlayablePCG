@@ -15,6 +15,7 @@ class IHttpResponse;
 
 class AZoneEnemySpawner;
 class AZoneGoalPoint;
+class AZoneDangerArea;
 
 UENUM(BlueprintType)
 enum class EZonePathType : uint8
@@ -158,6 +159,9 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gameplay")
     TSubclassOf<AActor> EnemySpawnerClass;
+
+    UPROPERTY(EditAnywhere, Category = "Zone|Gameplay")
+    TSubclassOf<AZoneDangerArea> DangerAreaClass;
 
     // 에디터에서 직접 바꿀 값들
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Zone Data")

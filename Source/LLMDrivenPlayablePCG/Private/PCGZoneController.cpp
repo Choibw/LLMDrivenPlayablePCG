@@ -23,6 +23,7 @@
 #include "ZoneEnemySpawner.h"
 #include "ZoneGoalPoint.h"
 #include "ZonePlayerCharacter.h"
+#include "ZoneDangerArea.h"
 
 #include "TimerManager.h"
 #include "Engine/World.h"
@@ -451,6 +452,9 @@ void APCGZoneController::ApplyAreaPCG()
             AreaClass = GoalAreaPCGClass;
             break;
 
+        case EZoneAreaType::Danger: 
+            continue;
+
         default:
             UE_LOG(
                 LogTemp,
@@ -609,79 +613,68 @@ void APCGZoneController::ClearSpawnedAreaPCGActors()
 void APCGZoneController::LoadSampleZoneJson()
 {
     const FString SampleJson = TEXT(R"(
-        {
-  "theme": "forest",
+{
+  "theme": "desert",
   "base_environment": {
-    "tree_density": 0.6,
-    "rock_density": 0.1,
-    "grass_density": 0.3
+    "tree_density": 0.05,
+    "rock_density": 0.15,
+    "grass_density": 0.1
   },
   "main_path": {
     "path_type": "main",
-    "path_width": 500,
+    "path_width": 800,
     "normalized_points": [
-      {
-        "x": 0.15,
-        "y": 0.78
-      },
-      {
-        "x": 0.22,
-        "y": 0.65
-      },
-      {
-        "x": 0.38,
-        "y": 0.52
-      },
-      {
-        "x": 0.55,
-        "y": 0.61
-      },
-      {
-        "x": 0.72,
-        "y": 0.48
-      },
-      {
-        "x": 0.85,
-        "y": 0.58
-      }
+      {"x": 0.5, "y": 0.92},
+      {"x": 0.58, "y": 0.7},
+      {"x": 0.4, "y": 0.5},
+      {"x": 0.24, "y": 0.34},
+      {"x": 0.32, "y": 0.16},
+      {"x": 0.14, "y": 0.08}
     ]
   },
   "areas": [
     {
       "area_type": "spawn",
-      "normalized_center": {
-        "x": 0.15,
-        "y": 0.78
-      },
-      "normalized_radius": 0.05,
+      "normalized_center": {"x": 0.5, "y": 0.92},
+      "normalized_radius": 0.04,
       "detail_density": 0.2
     },
     {
+      "area_type": "danger",
+      "normalized_center": {"x": 0.33, "y": 0.6},
+      "normalized_radius": 0.05,
+      "detail_density": 0.6
+    },
+    {
       "area_type": "combat",
-      "normalized_center": {
-        "x": 0.336,
-        "y": 0.671
-      },
-      "normalized_radius": 0.06,
+      "normalized_center": {"x": 0.4, "y": 0.5},
+      "normalized_radius": 0.05,
       "detail_density": 0.4
     },
     {
       "area_type": "combat",
-      "normalized_center": {
-        "x": 0.77,
-        "y": 0.484
-      },
-      "normalized_radius": 0.06,
-      "detail_density": 0.4
+      "normalized_center": {"x": 0.28, "y": 0.25},
+      "normalized_radius": 0.12,
+      "detail_density": 0.8
     },
     {
       "area_type": "goal",
-      "normalized_center": {
-        "x": 0.85,
-        "y": 0.58
-      },
-      "normalized_radius": 0.05,
-      "detail_density": 0.3
+      "normalized_center": {"x": 0.14, "y": 0.08},
+      "normalized_radius": 0.06,
+      "detail_density": 0.5
+    }
+  ],
+  "branch_paths": [
+    {
+      "path_type": "shortcut",
+      "path_width": 480,
+      "normalized_points": [
+        {"x": 0.58, "y": 0.7},
+        {"x": 0.43, "y": 0.67},
+        {"x": 0.33, "y": 0.6},
+        {"x": 0.26, "y": 0.49},
+        {"x": 0.24, "y": 0.34}
+      ]
     }
   ]
 }
@@ -1134,10 +1127,151 @@ bool APCGZoneController::ApplyZoneJsonString(const FString& JsonString)
         return false;
     }
 
-    // 기존 main_path 데이터를 다중 경로 배열에 연결
-    // JSON을 다시 적용할 때 이전 경로가 누적되지 않도록 초기화
-    CurrentZoneData.Paths.Reset();
-    CurrentZoneData.Paths.Add(CurrentZoneData.MainPath);
+    // 메인 경로와 보조 경로를 임시 배열에 구성
+    TArray<FZonePathData> ParsedPaths;
+    ParsedPaths.Add(CurrentZoneData.MainPath);
+
+    // branch_paths는 선택 항목
+    if (RootObject->HasField(TEXT("branch_paths")))
+    {
+        const TArray<TSharedPtr<FJsonValue>>* BranchPathsArray = nullptr;
+
+        if (!RootObject->TryGetArrayField(
+            TEXT("branch_paths"),
+            BranchPathsArray
+        ) || !BranchPathsArray)
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("[PCGZoneController] branch_paths must be an array.")
+            );
+            return false;
+        }
+
+        for (int32 Index = 0; Index < BranchPathsArray->Num(); ++Index)
+        {
+            const TSharedPtr<FJsonValue>& PathValue =
+                (*BranchPathsArray)[Index];
+
+            if (!PathValue.IsValid() || PathValue->Type != EJson::Object)
+            {
+                UE_LOG(
+                    LogTemp,
+                    Warning,
+                    TEXT("[PCGZoneController] Invalid branch path object. Index=%d"),
+                    Index
+                );
+                return false;
+            }
+
+            const TSharedPtr<FJsonObject> PathObject =
+                PathValue->AsObject();
+
+            FZonePathData BranchPath;
+            BranchPath.PathType = EZonePathType::Branch;
+
+            FString PathTypeString;
+
+            if (PathObject->TryGetStringField(
+                TEXT("path_type"),
+                PathTypeString
+            ))
+            {
+                BranchPath.PathType = ParsePathType(PathTypeString);
+            }
+
+            double PathWidth = BranchPath.PathWidth;
+
+            if (PathObject->TryGetNumberField(
+                TEXT("path_width"),
+                PathWidth
+            ))
+            {
+                if (!FMath::IsFinite(PathWidth))
+                {
+                    return false;
+                }
+
+                BranchPath.PathWidth = FMath::Clamp(
+                    static_cast<float>(PathWidth),
+                    100.0f,
+                    1500.0f
+                );
+            }
+
+            const TArray<TSharedPtr<FJsonValue>>* PointsArray = nullptr;
+
+            if (!PathObject->TryGetArrayField(
+                TEXT("normalized_points"),
+                PointsArray
+            ) || !PointsArray || PointsArray->Num() < 2)
+            {
+                UE_LOG(
+                    LogTemp,
+                    Warning,
+                    TEXT("[PCGZoneController] Branch path requires at least two points. Index=%d"),
+                    Index
+                );
+                return false;
+            }
+
+            for (const TSharedPtr<FJsonValue>& PointValue : *PointsArray)
+            {
+                if (!PointValue.IsValid()
+                    || PointValue->Type != EJson::Object)
+                {
+                    UE_LOG(
+                        LogTemp,
+                        Warning,
+                        TEXT("[PCGZoneController] Invalid branch path point. Index=%d"),
+                        Index
+                    );
+                    return false;
+                }
+
+                const TSharedPtr<FJsonObject> PointObject =
+                    PointValue->AsObject();
+
+                double X = 0.0;
+                double Y = 0.0;
+
+                if (!PointObject->TryGetNumberField(TEXT("x"), X)
+                    || !PointObject->TryGetNumberField(TEXT("y"), Y)
+                    || !FMath::IsFinite(X)
+                    || !FMath::IsFinite(Y)
+                    || X < 0.0 || X > 1.0
+                    || Y < 0.0 || Y > 1.0)
+                {
+                    UE_LOG(
+                        LogTemp,
+                        Warning,
+                        TEXT("[PCGZoneController] Invalid branch path coordinates. Index=%d"),
+                        Index
+                    );
+                    return false;
+                }
+
+                BranchPath.NormalizedPathPoints.Add(
+                    FVector2D(X, Y)
+                );
+            }
+
+            ParsedPaths.Add(BranchPath);
+
+            UE_LOG(
+                LogTemp,
+                Log,
+                TEXT("[PCGZoneController] Parsed branch path. Index=%d PointCount=%d Width=%f"),
+                Index,
+                BranchPath.NormalizedPathPoints.Num(),
+                BranchPath.PathWidth
+            );
+        }
+    }
+
+    // 보조 경로까지 정상적으로 읽었을 때 경로 배열 갱신
+    CurrentZoneData.Paths = MoveTemp(ParsedPaths);
 
     UE_LOG(
         LogTemp,
@@ -1359,12 +1493,20 @@ void APCGZoneController::ApplyGameplayMarkers()
             break;
 
         case EZoneAreaType::Danger:
+            MarkerClass = DangerAreaClass;
+            break;
+
         default:
             break;
         }
 
         if (!MarkerClass)
         {
+            if (AreaData.AreaType == EZoneAreaType::Danger)
+            {
+                MarkZoneGenerationFailed(TEXT("Danger area class is missing."));
+            }
+
             continue;
         }
 
@@ -1391,6 +1533,16 @@ void APCGZoneController::ApplyGameplayMarkers()
         if (IsValid(SpawnedMarker))
         {
             SpawnedGameplayMarkers.Add(SpawnedMarker);
+
+            if (AZoneDangerArea* DangerArea = Cast<AZoneDangerArea>(SpawnedMarker))
+            {
+                const float ZoneShortSide = FMath::Min(
+                    CurrentZoneData.ZoneSize.X,
+                    CurrentZoneData.ZoneSize.Y
+                );
+
+                DangerArea->SetDangerRadius(AreaData.NormalizedRadius * ZoneShortSide);
+            }
 
             if (AreaData.AreaType == EZoneAreaType::Spawn)
             {
@@ -1423,6 +1575,10 @@ void APCGZoneController::ApplyGameplayMarkers()
                 static_cast<int32>(AreaData.AreaType),
                 *SpawnLocation.ToString()
             );
+        }
+        else if (AreaData.AreaType == EZoneAreaType::Danger)
+        {
+            MarkZoneGenerationFailed(TEXT("Failed to spawn a danger area."));
         }
 
         // Combat 구역마다 적 스포너 생성
