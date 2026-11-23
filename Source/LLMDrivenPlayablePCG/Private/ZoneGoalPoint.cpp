@@ -5,8 +5,13 @@
 
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "GameFramework/Pawn.h"
+
 #include "Kismet/GameplayStatics.h"
+
+#include "GameFramework/Pawn.h"
+#include "GameFramework/Controller.h"
+#include "GameFramework/PawnMovementComponent.h"
+#include "GameFramework/PlayerStart.h"
 
 AZoneGoalPoint::AZoneGoalPoint()
 {
@@ -97,5 +102,35 @@ void AZoneGoalPoint::OnGoalTriggerBeginOverlap(
     if (bDeactivateAfterClear)
     {
         DeactivateGoal();
+    }
+
+    TArray<AActor*> LobbyStarts;
+    UGameplayStatics::GetAllActorsOfClassWithTag(
+        this, APlayerStart::StaticClass(), FName(TEXT("LobbyStart")), LobbyStarts
+    );
+
+    if (LobbyStarts.Num() != 1 || !IsValid(LobbyStarts[0]) || !IsValid(PlayerPawn))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[ZoneGoalPoint] Expected one LobbyStart."));
+        return;
+    }
+
+    const AActor* LobbyStart = LobbyStarts[0];
+    const FRotator LobbyRotation = LobbyStart->GetActorRotation();
+
+    if (!PlayerPawn->TeleportTo(LobbyStart->GetActorLocation(), LobbyRotation, false, false))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[ZoneGoalPoint] Lobby teleport failed."));
+        return;
+    }
+
+    if (UPawnMovementComponent* Movement = PlayerPawn->GetMovementComponent())
+    {
+        Movement->StopMovementImmediately();
+    }
+
+    if (AController* Controller = PlayerPawn->GetController())
+    {
+        Controller->SetControlRotation(LobbyRotation);
     }
 }
