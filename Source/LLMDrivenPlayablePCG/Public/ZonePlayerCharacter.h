@@ -12,6 +12,8 @@ class UCameraComponent;
 class UInputAction;
 struct FInputActionValue;
 
+class UAnimMontage;
+
 UCLASS()
 class LLMDRIVENPLAYABLEPCG_API AZonePlayerCharacter : public ACharacter
 {
@@ -49,6 +51,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Health")
 	bool RespawnAtLocation(const FVector& RespawnLocation);
 
+	UFUNCTION(BlueprintCallable, Category = "Combat")
+	void ResolveSwordHit();
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -73,6 +78,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> AttackAction;
 
+	UPROPERTY(EditDefaultsOnly, Category = "Input")
+	TObjectPtr<UInputAction> DodgeAction;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> JumpAction;
 
@@ -86,6 +94,12 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
 	float AttackRange = 1200.0f;
 
+	UPROPERTY(EditDefaultsOnly, Category = "Combat|Animation")
+	TObjectPtr<UAnimMontage> AttackMontage = nullptr;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Combat|Animation")
+	TObjectPtr<UAnimMontage> DodgeMontage = nullptr;
+
 protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Health",
 		meta = (ClampMin = "1.0"))
@@ -94,6 +108,9 @@ protected:
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Health")
 	float CurrentHealth = 0.0f;
 
+	UPROPERTY(EditDefaultsOnly, Category = "Health", meta = (ClampMin = "0.1"))
+	float RespawnDelay = 3.0f;
+
 private:
 	void Move(const FInputActionValue& Value);
 	void Look(const FInputActionValue& Value);
@@ -101,15 +118,17 @@ private:
 	void PerformAttackTrace();
 	void Die();
 	void Interact();
+	void Dodge();
+	void TryJump();
+
+	void OnDodgeMontageEnded(UAnimMontage* Montage, bool bInterrupted);
 
 private:
 	UPROPERTY(VisibleInstanceOnly, Category = "Health")
 	bool bIsDead = false;
 
-protected:
-	UPROPERTY(EditDefaultsOnly, Category = "Health",
-		meta = (ClampMin = "0.1"))
-	float RespawnDelay = 3.0f;
+	bool bIsDodging = false;
+	bool bSwordHitPending = false;
 
 private:
 	FTimerHandle RespawnTimerHandle;

@@ -6,14 +6,20 @@
 #include "Camera/CameraComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/Controller.h"
+#include "GameFramework/RootMotionSource.h"
+
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 
 #include "EnhancedInputComponent.h"
 #include "InputActionValue.h"
-#include "GameFramework/Controller.h"
 
 #include "ZoneEnemyBase.h"
 #include "DrawDebugHelpers.h"
+
 #include "Kismet/GameplayStatics.h"
+#include "Kismet/KismetSystemLibrary.h"
 
 #include "PCGZoneController.h"
 #include "ZonePlayerController.h"
@@ -21,6 +27,9 @@
 
 #include "ZoneDialogueNPC.h"
 #include "EngineUtils.h"
+
+#include "Animation/AnimMontage.h"
+#include "Animation/AnimInstance.h"
 
 AZonePlayerCharacter::AZonePlayerCharacter()
 {
@@ -172,6 +181,8 @@ void AZonePlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInpu
 	if (MoveAction)
 	{
 		EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Triggered, this, &AZonePlayerCharacter::Move);
+
+		EnhancedInputComponent->BindActionValue(MoveAction);
 	}
 
 	if (LookAction)
@@ -186,7 +197,7 @@ void AZonePlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInpu
 
 	if (JumpAction)
 	{
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Started, this, &ACharacter::Jump);
+		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Started, this, &AZonePlayerCharacter::TryJump);
 
 		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
 	}
@@ -195,10 +206,20 @@ void AZonePlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInpu
 	{
 		EnhancedInputComponent->BindAction(InteractAction, ETriggerEvent::Started, this, &AZonePlayerCharacter::Interact);
 	}
+
+	if (DodgeAction)
+	{
+		EnhancedInputComponent->BindAction(DodgeAction.Get(), ETriggerEvent::Started, this, &AZonePlayerCharacter::Dodge);
+	}
 }
 
 void AZonePlayerCharacter::Move(const FInputActionValue& Value)
 {
+	if (bIsDodging)
+	{
+		return;
+	}
+
 	const FVector2D MovementVector = Value.Get<FVector2D>();
 
 	if (!Controller)
@@ -226,74 +247,140 @@ void AZonePlayerCharacter::Look(const FInputActionValue& Value)
 
 void AZonePlayerCharacter::Attack()
 {
-	if (bIsDead)
+	if (bIsDead || bIsDodging || !AttackMontage)
 	{
 		return;
 	}
 
+	const UAnimInstance* AnimInstance = GetMesh()->GetAnimInstance();
+	if (!AnimInstance || AnimInstance->Montage_IsActive(AttackMontage.Get()))
+	{
+		return;
+	}
+
+	bSwordHitPending = PlayAnimMontage(AttackMontage.Get()) > 0.0f;
+}
+
+void AZonePlayerCharacter::ResolveSwordHit()
+{
+	if (bIsDead || bIsDodging || !bSwordHitPending)
+	{
+		return;
+	}
+
+	bSwordHitPending = false;
 	PerformAttackTrace();
+}
+
+void AZonePlayerCharacter::Dodge()
+{
+	if (bIsDead || bIsDodging || !DodgeMontage)
+	{
+		return;
+	}
+
+	constexpr float RollPlayRate = 1.8f;
+	constexpr float RollDistance = 360.0f;  // cm
+	constexpr float RollMoveTime = 0.45f;   // ÃÊ
+
+	UAnimInstance* AnimInstance = GetMesh()->GetAnimInstance();
+	if (!AnimInstance || PlayAnimMontage(DodgeMontage.Get(), RollPlayRate) <= 0.0f)
+	{
+		return;
+	}
+
+	bIsDodging = true;
+	bSwordHitPending = false;
+	ConsumeMovementInputVector();
+
+	FVector DodgeDirection = GetActorForwardVector().GetSafeNormal2D();
+
+	const UEnhancedInputComponent* EnhancedInput =
+		Cast<UEnhancedInputComponent>(InputComponent);
+
+	if (EnhancedInput && MoveAction && Controller)
+	{
+		const FVector2D Stick =
+			EnhancedInput->GetBoundActionValue(MoveAction).Get<FVector2D>();
+
+		if (!Stick.IsNearlyZero())
+		{
+			const FRotator CameraYaw(0.0f, Controller->GetControlRotation().Yaw, 0.0f);
+			DodgeDirection = CameraYaw.RotateVector(
+				FVector(Stick.Y, Stick.X, 0.0f)).GetSafeNormal();
+		}
+	}
+
+	SetActorRotation(DodgeDirection.Rotation());
+
+	auto RollMotion = MakeShared<FRootMotionSource_ConstantForce>();
+	RollMotion->InstanceName = FName(TEXT("PlayerDodgeForward"));
+	RollMotion->AccumulateMode = ERootMotionAccumulateMode::Override;
+	RollMotion->Force = DodgeDirection * (RollDistance / RollMoveTime);
+	RollMotion->Duration = RollMoveTime;
+	RollMotion->Settings.SetFlag(ERootMotionSourceSettingsFlags::IgnoreZAccumulate);
+	RollMotion->FinishVelocityParams.Mode = ERootMotionFinishVelocityMode::ClampVelocity;
+	RollMotion->FinishVelocityParams.ClampVelocity = 0.0f;
+	GetCharacterMovement()->ApplyRootMotionSource(RollMotion);
+
+	FOnMontageEnded EndDelegate;
+	EndDelegate.BindUObject(this, &AZonePlayerCharacter::OnDodgeMontageEnded);
+	AnimInstance->Montage_SetEndDelegate(EndDelegate, DodgeMontage.Get());
+}
+
+void AZonePlayerCharacter::TryJump()
+{
+	if (bIsDead || bIsDodging)
+	{
+		return;
+	}
+
+	const UAnimInstance* AnimInstance = GetMesh()->GetAnimInstance();
+	if (AnimInstance && AttackMontage &&
+		AnimInstance->GetInstanceForMontage(AttackMontage.Get()))
+	{
+		return;
+	}
+
+	Jump();
+}
+
+void AZonePlayerCharacter::OnDodgeMontageEnded(UAnimMontage*, bool)
+{
+	GetCharacterMovement()->RemoveRootMotionSource(FName(TEXT("PlayerDodgeForward")));
+	bIsDodging = false;
 }
 
 void AZonePlayerCharacter::PerformAttackTrace()
 {
-	AController* OwnerController = GetController();
-	if (!OwnerController)
-	{
-		return;
-	}
+	constexpr float HitRadius = 230.0f;
+	const FVector Origin = GetActorLocation();
+	const FVector Forward = GetActorForwardVector().GetSafeNormal2D();
 
-	FVector ViewLocation;
-	FRotator ViewRotation;
-	OwnerController->GetPlayerViewPoint(ViewLocation, ViewRotation);
+	const TArray<TEnumAsByte<EObjectTypeQuery>> ObjectTypes = {
+		UEngineTypes::ConvertToObjectType(ECC_Pawn)
+	};
 
-	const FVector TraceStart = ViewLocation;
-	const FVector TraceEnd = TraceStart + ViewRotation.Vector() * AttackRange;
-
-	FHitResult HitResult;
-	FCollisionQueryParams Params;
-	Params.AddIgnoredActor(this);
-
-	const bool bHit = GetWorld()->LineTraceSingleByChannel(
-		HitResult,
-		TraceStart,
-		TraceEnd,
-		ECC_Visibility,
-		Params
+	TArray<AActor*> NearbyEnemies;
+	UKismetSystemLibrary::SphereOverlapActors(
+		this, Origin, HitRadius, ObjectTypes,
+		AZoneEnemyBase::StaticClass(), TArray<AActor*>{this}, NearbyEnemies
 	);
 
-	DrawDebugLine(
-		GetWorld(),
-		TraceStart,
-		TraceEnd,
-		bHit ? FColor::Green : FColor::Red,
-		false,
-		1.0f,
-		0,
-		2.0f
-	);
-
-	if (!bHit)
+	for (AActor* Actor : NearbyEnemies)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PlayerAttack] Miss."));
-		return;
+		AZoneEnemyBase* Enemy = Cast<AZoneEnemyBase>(Actor);
+		if (!IsValid(Enemy))
+		{
+			continue;
+		}
+
+		const FVector ToEnemy = Enemy->GetActorLocation() - Origin;
+		if (FVector::DotProduct(Forward, ToEnemy) >= 0.0f)
+		{
+			Enemy->ApplyDamage(AttackDamage);
+		}
 	}
-
-	AActor* HitActor = HitResult.GetActor();
-
-	UE_LOG(LogTemp, Warning, TEXT("[PlayerAttack] Hit Actor=%s"), *GetNameSafe(HitActor));
-
-	AZoneEnemyBase* HitEnemy = Cast<AZoneEnemyBase>(HitActor);
-	if (!HitEnemy)
-	{
-		return;
-	}
-
-	HitEnemy->ApplyDamage(AttackDamage);
-
-	UE_LOG(LogTemp, Warning, TEXT("[PlayerAttack] Enemy damaged. Target=%s Damage=%f"),
-		*GetNameSafe(HitEnemy),
-		AttackDamage
-	);
 }
 
 void AZonePlayerCharacter::Die()
