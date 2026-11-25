@@ -141,7 +141,7 @@ PALETTE = {
     "needle":      {"color": (0.11, 0.24, 0.14), "tex": "needle", "twiglets": 12},
     "juniper":     {"color": (0.26, 0.42, 0.33), "tex": "needle", "twiglets": 7, "frost": 0.6, "seed": 77},
     "frost_blade": {"color": (0.74, 0.68, 0.52), "tex": "blade"},
-    "frost_twig":  {"color": (0.60, 0.58, 0.56), "tex": "twig"},
+    "frost_twig":  {"color": (0.76, 0.74, 0.72), "tex": "twig", "depth": 5},
 }
 
 
@@ -184,13 +184,55 @@ def blob(rng, size, lat=22, lon=32, rough=0.14, sink=0.2, flat=0.35):
     return V, F, UV, dirs
 
 
-def snow_rock(rng, size, layers=4, lat=22, lon=32, depth=0.04, body="slate", rough=0.14):
-    """blob + snow pillow: vertices facing up are lifted by `depth`, upward faces on the upper half get
-    the snow material (material split by face normal.y). `layers` kept for call-site symmetry (unused)."""
+def _vnoise(rng, P, scale=2.5, octaves=4):
+    """Cheap per-vertex 3D noise in about -0.5..0.5 (sum of random-direction sines, like blob())."""
+    out = np.zeros(len(P))
+    for k in range(octaves):
+        W = rng.normal(size=3) * scale * (1.7 ** k)
+        out += (0.55 ** k) * np.sin(P @ W + rng.uniform(0, 2 * np.pi))
+    return out / (2 * sum(0.55 ** k for k in range(octaves)))
+
+
+def snow_rock(rng, size, layers=4, lat=22, lon=32, depth=0.04, body="slate", rough=0.14, lip=0.6):
+    """blob + snow pillow. Per-vertex snow score = sphere-normal.y + noise, so the cap edge wanders instead of
+    stair-stepping along a lat ring; a face is snow when the mean score of its corners passes the threshold.
+    Snow vertices lift by `depth`; vertices on the boundary bulge outward (thin overhang lip).
+    `layers` kept for call-site symmetry (unused)."""
     V, F, UV, dirs = blob(rng, size, lat=lat, lon=lon, rough=rough)
-    up = np.clip((dirs[:, 1] - 0.25) / 0.6, 0, 1)
+    score = dirs[:, 1] + 0.45 * _vnoise(rng, dirs)
+    up = np.clip((score - 0.15) / 0.6, 0, 1)
     V[:, 1] += depth * up * up * (3 - 2 * up)
-    return V, F, UV, _face_split(V, F, "snow", body, 0.4, 0.45)
+    rim = np.exp(-((score - 0.35) / 0.12) ** 2)
+    V += dirs * (lip * depth * rim)[:, None]
+    snow = score[F].mean(axis=1) > 0.35
+    return V, F, UV, np.where(snow, "snow", body).astype(object)
+
+
+def snow_patch(rng, radius, height_fn, rings=16, sides=40, uv_tiles=1.0, warp=0.2):
+    """Like mk.heightfield_disc but the outline is fbm-warped (radius varies with angle) and the height
+    tapers as (1-t^2)^2 to exactly 0 at the rim (zero slope -> blends into the landscape). Planar UV."""
+    amp = rng.normal(0, 1, 4)
+    amp *= warp / np.abs(amp).sum()
+    ph = rng.uniform(0, 2 * np.pi, 4)
+
+    def R(theta):
+        return radius * (1 + sum(a * math.sin((k + 2) * theta + p) for k, (a, p) in enumerate(zip(amp, ph))))
+
+    V = [[0.0, height_fn(0.0, 0.0), 0.0]]
+    for i in range(1, rings + 1):
+        t = i / rings
+        for j in range(sides):
+            th = 2 * np.pi * j / sides
+            x, z = t * R(th) * math.cos(th), t * R(th) * math.sin(th)
+            V.append([x, height_fn(x, z) * (1 - t * t) ** 2, z])
+    V = np.array(V)
+    UV = (V[:, [0, 2]] / (2 * radius) + 0.5) * uv_tiles
+    F = [[0, 1 + (j + 1) % sides, 1 + j] for j in range(sides)]
+    for i in range(rings - 1):
+        for j in range(sides):
+            a, b = 1 + i * sides + j, 1 + i * sides + (j + 1) % sides
+            F += [[a, b, b + sides], [a, b + sides, a + sides]]
+    return V, np.array(F), UV
 
 
 # --------------------------------------------------------------------------
@@ -206,7 +248,7 @@ def _spruce_branch(m, p0, d, L, droop, n=6, width=0.30, snow=0.03):
     w = np.full(n, L * width)
     m.add(*mk.ribbon(P, w, horiz), "needle")          # flat needle layer (reads from above)
     m.add(*mk.ribbon(P, w * 0.5, vert), "needle")     # upright cross card (silhouette from the side)
-    m.add(*mk.ribbon(P + UP * snow, w * 0.6, horiz), "snowcap")  # snow pillow on the top surface
+    m.add(*mk.ribbon(P + UP * snow, w * 0.72, horiz), "snowcap")  # snow pillow on the top surface
 
 
 def spruce(seed, H, tiers=12, per_tier=9, Lmax=1.25, droop=0.32, trunk_r=0.09, n=6):
@@ -243,7 +285,8 @@ def spruce(seed, H, tiers=12, per_tier=9, Lmax=1.25, droop=0.32, trunk_r=0.09, n
 
 
 def birch(seed, H):
-    """Frosted bare birch: white trunk, upward forking branches, frosty twig cards at the tips."""
+    """Birch with a full frosted crown: white trunk, forking branches to depth 4, four crossed frost-twig
+    cards on every branch end from depth 2 up, and a snow clump card on each so the silhouette fills in."""
     rng = np.random.default_rng(seed)
     m = mk.Mesh()
     tips = []
@@ -256,104 +299,121 @@ def birch(seed, H):
             d = mk.unit(d + rng.normal(0, 0.22, 3) + np.array([0, up, 0]))
             pts.append(pts[-1] + d * length / steps)
         m.add(*mk.tube(pts, np.linspace(r0, r1, steps + 1), sides=sides, v_scale=2.0), "birch")
-        if depth < 3:
+        if depth < 4:
             for k in (2, 4):
                 out = mk.unit(np.array([pts[k][0], 0, pts[k][2]]) + rng.normal(0, 0.5, 3) + [0, 1.1, 0])
-                branch(pts[k], out, length * 0.55, r1 * 1.1, r1 * 0.4, depth + 1, max(sides - 3, 5))
-        else:
-            tips.append((pts[-1], d))
+                branch(pts[k], out, length * 0.6, r1 * 1.1, r1 * 0.45, depth + 1, max(sides - 3, 4))
+        if depth >= 2:
+            tips.append((pts[-1], d, depth))
         return pts
 
-    trunk = branch([0, 0, 0], [0.03, 1, 0.02], H * 0.5, 0.055 * H, 0.03 * H, 1, 14, up=0.9)
+    trunk = branch([0, 0, 0], [0.03, 1, 0.02], H * 0.45, 0.055 * H, 0.03 * H, 1, 14, up=0.9)
     for az in (30, 160, 280):
         d = [math.cos(math.radians(az)) * 0.5, 1.0, math.sin(math.radians(az)) * 0.5]
-        branch(trunk[-1], d, H * 0.4, 0.028 * H, 0.009 * H, 1, 9)
-    for p, d in tips:  # frosted twig cards, two crossed per tip
-        L = 0.17 * H
-        d = mk.unit(d + [0, 0.4, 0])
+        branch(trunk[-1], d, H * 0.38, 0.028 * H, 0.009 * H, 1, 9)
+    for p, d, depth in tips:
+        L = (0.2 if depth >= 3 else 0.14) * H
+        d = mk.unit(d + [0, 0.5, 0])
         s = np.linspace(0, 1, 4)
         P = p + d * (L * s)[:, None]
         horiz = mk.unit(np.cross(UP, d) if abs(d[1]) < 0.98 else [1, 0, 0])
-        for side in (horiz, np.cross(d, horiz)):
-            m.add(*mk.ribbon(P, np.full(4, L * 0.9), side), "frost_twig")
+        c = np.cross(d, horiz)
+        w = np.full(4, L * 1.0)
+        for side in (horiz, c, mk.unit(horiz + c), mk.unit(horiz - c)):
+            m.add(*mk.ribbon(P, w, side), "frost_twig")
+        m.add(*mk.ribbon(P[1:] + UP * 0.03, w[1:] * 0.55, horiz), "snowcap")
     return fit_height(m, H)
 
 
 # --------------------------------------------------------------------------
 # rock slot (small, snow-capped)
 # --------------------------------------------------------------------------
-def rock(seed, size, layers=4):
+def rock(seed, size, layers=4, depth=0.08):
     rng = np.random.default_rng(seed)
     m = mk.Mesh()
-    m.add(*snow_rock(rng, size, layers=layers, depth=0.05))
+    m.add(*snow_rock(rng, size, layers=layers, depth=depth))
     return m
 
 
-def rock_cluster(seed, count=4, radius=0.3):
+def _snow_lumps(m, rng, count, r_range, s_range, y=0.0, flat=0.3):
+    """Small irregular snow lumps (fbm blobs, sunk) scattered in a ring r_range around the origin."""
+    for _ in range(count):
+        a, r, s = rng.uniform(0, 6.28), rng.uniform(*r_range), rng.uniform(*s_range)
+        V, F, UV, _ = blob(rng, (s * rng.uniform(1.0, 1.4), s * 0.5, s * rng.uniform(0.8, 1.1)),
+                           lat=8, lon=12, rough=0.18, sink=0.3, flat=flat)
+        m.add(mk.place(V, rot_y=rng.uniform(0, 6.28), pos=(r * math.cos(a), y, r * math.sin(a))), F, UV, "snow")
+
+
+def snow_mound(seed, radius=1.05, h0=0.27, tips=4):
+    """Wide low soft snow mound (fbm outline, zero-slope rim) with slate tips poking out. Fills empty ground."""
     rng = np.random.default_rng(seed)
     m = mk.Mesh()
-    for k in range(count):
-        s = rng.uniform(0.10, 0.17)
-        V, F, UV, mat = snow_rock(rng, (s * rng.uniform(1.0, 1.5), s * 0.85, s * rng.uniform(0.8, 1.2)),
-                                  layers=3, lat=14, lon=20, depth=0.035)
-        a = 2 * math.pi * k / count + rng.uniform(-0.4, 0.4)
-        r = radius * rng.uniform(0.3, 1.0)
-        m.add(mk.place(V, rot_y=rng.uniform(0, 6.28), pos=(r * math.cos(a), 0, r * math.sin(a))), F, UV, mat)
-    return m
-
-
-# --------------------------------------------------------------------------
-# grass slot
-# --------------------------------------------------------------------------
-def _mound(m, radius, h0, rng):
-    ph = rng.uniform(0, 6.28)
+    p1, p2 = rng.uniform(0, 6.28, 2)
 
     def h(x, z):
-        r = math.hypot(x, z) / radius
-        return h0 * max(0.0, 1 - r * r) * (0.85 + 0.15 * math.sin(3 * math.atan2(z, x) + ph))
+        return h0 * (0.8 + 0.2 * math.sin(2.2 * x + p1) * math.cos(1.9 * z + p2))
 
-    m.add(*mk.heightfield_disc(radius, h, rings=6, sides=18, uv_tiles=0.5), "snow")
+    m.add(*snow_patch(rng, radius, h, rings=16, sides=44, uv_tiles=1.5, warp=0.18), "snow")
+    for k in range(tips):
+        a = 2 * math.pi * k / tips + rng.uniform(-0.5, 0.5)
+        r = radius * rng.uniform(0.15, 0.5)
+        x, z = r * math.cos(a), r * math.sin(a)
+        y = h(x, z) * (1 - (r / radius) ** 2) ** 2  # tips sit well inside, so the mean radius is close enough
+        s = rng.uniform(0.14, 0.2)
+        V, F, UV, mat = snow_rock(rng, (s * rng.uniform(1.0, 1.4), s * 0.8, s * rng.uniform(0.8, 1.2)),
+                                  lat=12, lon=18, depth=0.03)
+        m.add(mk.place(V, rot_y=rng.uniform(0, 6.28), pos=(x, y - 0.6 * s, z)), F, UV, mat)
+    return m
 
 
-def frozen_grass(seed, height):
-    """Dry grass tufts poking through a low snow mound."""
+# --------------------------------------------------------------------------
+# grass slot (no ground discs: PCG scatters these densely and discs read as polka dots)
+# --------------------------------------------------------------------------
+def frozen_grass(seed, height, radius=0.5, tufts=10):
+    """Full clump of dry frosted grass (3 crossed cards per tuft, taller in the middle) with a few small
+    irregular snow lumps hugging the stems."""
     rng = np.random.default_rng(seed)
     m = mk.Mesh()
-    _mound(m, 0.36, 0.06, rng)
-    for cx, cz, sc in ((0, 0, 1.0), (0.14, 0.06, 0.72), (-0.1, -0.12, 0.8), (0.05, -0.16, 0.6)):
-        h = height * sc
-        lean = rng.uniform(-0.08, 0.08, 2)
-        for k in range(3):
-            az = math.pi * k / 3 + rng.uniform(-0.2, 0.2)
+    for k in range(tufts):
+        a = 2 * math.pi * k / tufts + rng.uniform(-0.3, 0.3)
+        r = radius * 0.72 * math.sqrt(rng.uniform(0.05, 1.0))
+        cx, cz = r * math.cos(a), r * math.sin(a)
+        h = height * rng.uniform(0.65, 1.0) * (1 - 0.3 * r / radius)
+        lean = rng.uniform(-0.1, 0.1, 2)
+        for j in range(3):
+            az = math.pi * j / 3 + rng.uniform(-0.2, 0.2)
             P = np.array([[cx, 0.03, cz], [cx + lean[0] * 0.4, 0.03 + h * 0.5, cz + lean[1] * 0.4],
                           [cx + lean[0], 0.03 + h, cz + lean[1]]])
-            m.add(*mk.ribbon(P, [h * 1.0] * 3, [math.cos(az), 0, math.sin(az)]), "frost_blade")
+            m.add(*mk.ribbon(P, [h * 1.1] * 3, [math.cos(az), 0, math.sin(az)]), "frost_blade")
+    _snow_lumps(m, rng, 3, (0.08, 0.28), (0.08, 0.12))
     return m
 
 
 def juniper(seed, size):
-    """Low snowy shrub: short woody stems, frosted juniper sprays, snow pillows on top."""
+    """Dense low snow-laden shrub: three rings of sprays (low outer, mid, steep inner core), every spray
+    with a snow pillow card, and snow lumps weighing down the crown."""
     rng = np.random.default_rng(seed)
     m = mk.Mesh()
-    _mound(m, size * 0.7, 0.05, rng)
-    m.add(*mk.tube([[0, 0, 0], [0, size * 0.2, 0]], [0.035, 0.025], sides=7), "bark")
-    for k in range(9):
-        az = 2 * math.pi * k / 9 + rng.uniform(-0.3, 0.3)
-        elev = math.radians(rng.uniform(20, 60))
-        d = np.array([math.cos(az) * math.cos(elev), math.sin(elev), math.sin(az) * math.cos(elev)])
-        L = size * rng.uniform(0.6, 0.9)
-        stem = [[0, size * 0.15, 0], [0, size * 0.15, 0] + d * L * 0.5]
-        m.add(*mk.tube(stem, [0.018, 0.01], sides=5), "bark")
-        s = np.linspace(0, 1, 5)
-        P = stem[1] + d * (L * 0.6 * s)[:, None] - UP * (0.2 * L * s * s)[:, None]
-        horiz = mk.unit(np.cross(UP, d))
-        T = np.gradient(P, axis=0)
-        vert = np.cross(T, horiz)
-        vert /= np.linalg.norm(vert, axis=1)[:, None]
-        w = np.full(5, L * 0.5)
-        m.add(*mk.ribbon(P, w, horiz), "juniper")
-        m.add(*mk.ribbon(P, w * 0.6, vert), "juniper")
-        m.add(*mk.ribbon(P + UP * 0.02, w * 0.55, horiz), "snowcap")
+    m.add(*mk.tube([[0, 0, 0], [0, size * 0.25, 0]], [0.04, 0.03], sides=7), "bark")
+    for count, e0, e1, l0, l1 in ((14, 10, 35, 0.75, 1.0), (10, 30, 60, 0.6, 0.85), (6, 55, 80, 0.65, 0.9)):
+        for k in range(count):
+            az = 2 * math.pi * k / count + rng.uniform(-0.3, 0.3)
+            elev = math.radians(rng.uniform(e0, e1))
+            d = np.array([math.cos(az) * math.cos(elev), math.sin(elev), math.sin(az) * math.cos(elev)])
+            L = size * rng.uniform(l0, l1)
+            stem = [[0, size * 0.15, 0], [0, size * 0.15, 0] + d * L * 0.45]
+            m.add(*mk.tube(stem, [0.02, 0.01], sides=5), "bark")
+            s = np.linspace(0, 1, 5)
+            P = stem[1] + d * (L * 0.65 * s)[:, None] - UP * (0.25 * L * s * s)[:, None]
+            horiz = mk.unit(np.cross(UP, d))
+            T = np.gradient(P, axis=0)
+            vert = np.cross(T, horiz)
+            vert /= np.linalg.norm(vert, axis=1)[:, None]
+            w = np.full(5, L * 0.7)
+            m.add(*mk.ribbon(P, w, horiz), "juniper")
+            m.add(*mk.ribbon(P, w * 0.7, vert), "juniper")
+            m.add(*mk.ribbon(P + UP * 0.025, w * 0.7, horiz), "snowcap")
+    _snow_lumps(m, rng, 4, (0.0, 0.22 * size), (0.14 * size, 0.2 * size), y=size * 0.72, flat=0.4)
     return m
 
 
@@ -385,21 +445,20 @@ def ice_spire(seed, H, base=(1.35, 4.1, 1.1)):
 # --------------------------------------------------------------------------
 # ground slot
 # --------------------------------------------------------------------------
-def snow_drift(seed, radius=1.6):
-    """Wind-sculpted drift: soft mound + sharp-crested sastrugi ridges across the wind (x)."""
+def snow_drift(seed, radius=2.7):
+    """Wind-sculpted drift: fbm-warped outline, soft undulation + gentle sastrugi ripples across the wind (x),
+    height tapering to exactly 0 at the rim (snow_patch). Max height 0.06+0.05+0.035 = 0.145 m."""
     rng = np.random.default_rng(seed)
     p0, p1, p2 = rng.uniform(0, 6.28, 3)
 
     def h(x, z):
-        r = math.hypot(x, z) / radius
-        fall = max(0.0, 1 - r ** 3)
-        ph = z / 0.55 + 0.18 * math.sin(2 * math.pi * x / 1.3 + p0)
-        tri = 1 - abs((ph % 1.0) * 2 - 1)           # triangle wave -> sharp crests
-        mound = 0.5 + 0.5 * math.sin(1.4 * x + p1) * math.cos(0.9 * z + p2)
-        return fall * (0.03 + 0.045 * mound + 0.065 * tri ** 1.6 * (0.5 + 0.5 * mound))
+        ph = z / 0.7 + 0.2 * math.sin(2 * math.pi * x / 1.8 + p0)
+        ripple = (1 - abs((ph % 1.0) * 2 - 1)) ** 2       # softened triangle wave
+        mound = 0.5 + 0.5 * math.sin(0.9 * x + p1) * math.cos(0.6 * z + p2)
+        return 0.06 + 0.05 * mound + 0.035 * ripple * (0.5 + 0.5 * mound)
 
     m = mk.Mesh()
-    m.add(*mk.heightfield_disc(radius, h, rings=26, sides=54, uv_tiles=2.0), "snow")
+    m.add(*snow_patch(rng, radius, h, rings=30, sides=64, uv_tiles=3.0, warp=0.15), "snow")
     return m
 
 
@@ -410,11 +469,11 @@ SPECS = [
     mk.Spec("SM_Snow_Spruce_A", "tree", lambda s: spruce(s, 3.85, tiers=12, per_tier=9, Lmax=1.3), 1, 8000),
     mk.Spec("SM_Snow_Spruce_B", "tree", lambda s: spruce(s, 3.0, tiers=10, per_tier=8, Lmax=1.15, droop=0.4), 2, 8000),
     mk.Spec("SM_Snow_Birch_A", "tree", lambda s: birch(s, 3.9), 3, 8000),
-    mk.Spec("SM_Snow_Rock_A", "rock", lambda s: rock(s, (0.30, 0.17, 0.24), layers=3), 4, 8000),
-    mk.Spec("SM_Snow_Rock_B", "rock", lambda s: rock(s, (0.42, 0.27, 0.33), layers=4), 5, 8000),
-    mk.Spec("SM_Snow_RockCluster_A", "rock", lambda s: rock_cluster(s), 6, 8000),
-    mk.Spec("SM_Snow_FrozenGrass_A", "grass", lambda s: frozen_grass(s, 0.42), 7, 8000),
-    mk.Spec("SM_Snow_Juniper_A", "grass", lambda s: juniper(s, 0.65), 8, 8000),
+    mk.Spec("SM_Snow_Rock_A", "rock", lambda s: rock(s, (0.40, 0.24, 0.32), layers=3, depth=0.07), 4, 8000),
+    mk.Spec("SM_Snow_Rock_B", "rock", lambda s: rock(s, (0.66, 0.43, 0.52), layers=4, depth=0.1), 5, 8000),
+    mk.Spec("SM_Snow_RockCluster_A", "rock", lambda s: snow_mound(s), 6, 8000),
+    mk.Spec("SM_Snow_FrozenGrass_A", "grass", lambda s: frozen_grass(s, 0.5), 7, 8000),
+    mk.Spec("SM_Snow_Juniper_A", "grass", lambda s: juniper(s, 0.6), 8, 8000),
     mk.Spec("SM_Snow_GiantFir_A", "big", lambda s: spruce(s, 11.5, tiers=20, per_tier=11, Lmax=2.7, droop=0.3, trunk_r=0.28, n=7), 9, 20000),
     mk.Spec("SM_Snow_IceSpire_A", "big", lambda s: ice_spire(s, 6.6), 10, 20000),
     mk.Spec("SM_Snow_SnowDrift_A", "ground", lambda s: snow_drift(s), 11, 6000),
@@ -437,8 +496,21 @@ def patch_roughness(path, mat_name, rough):
     return len(hit)
 
 
+def check_tileable(h, tol=2.0):
+    """Height field must wrap: seam difference no larger than tol x the interior neighbour difference."""
+    inner = max(np.abs(h[1] - h[0]).mean(), np.abs(h[:, 1] - h[:, 0]).mean())
+    seam = max(np.abs(h[0] - h[-1]).mean(), np.abs(h[:, 0] - h[:, -1]).mean())
+    assert seam <= tol * inner, f"snow texture seam {seam:.4f} > {tol} x interior {inner:.4f}"
+
+
+# In-engine review asked for a 5-6 m drift; the kit's ground rule is 2-4 m. Runtime override, kit untouched.
+mk.SLOT_RULES["ground"] = (0.0, 0.15, 2.0, 6.5)
+
 if __name__ == "__main__":
     root = Path(__file__).resolve().parent
+    _, h_snow = tex_snow(PALETTE["snow"]["color"], np.random.default_rng(1000))  # same seed as build_textures (key 0)
+    check_tileable(h_snow)
+    print("OK: M_Snow_snow baseColor/normal tile seamlessly")
     mk.run("Snow", PALETTE, SPECS, root)
     spire = root / "meshes" / "SM_Snow_IceSpire_A.glb"
     assert patch_roughness(spire, "M_Snow_ice", ICE_ROUGHNESS) == 1
