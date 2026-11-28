@@ -2,6 +2,8 @@
 
 #include "ZoneEnemyBase.h"
 
+#include "Animation/AnimMontage.h"
+
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "TimerManager.h"
@@ -114,13 +116,62 @@ bool AZoneEnemyBase::IsDead() const
 	return CurrentHealth <= 0.0f;
 }
 
-bool AZoneEnemyBase::TryAttackPlayer(
-	AZonePlayerCharacter* TargetPlayer)
+bool AZoneEnemyBase::TryAttackPlayer(AZonePlayerCharacter* TargetPlayer)
 {
-	// 자신이나 대상이 죽었으면 공격하지 않음
-	if (IsDead()
-		|| !IsValid(TargetPlayer)
-		|| TargetPlayer->IsDead())
+	UWorld* World = GetWorld();
+	if (!World || !CanHitPlayer(TargetPlayer))
+	{
+		return false;
+	}
+
+	const double CurrentTime = World->GetTimeSeconds();
+	if (CurrentTime - LastAttackTime < FMath::Max(AttackInterval, 0.1f))
+	{
+		return false;
+	}
+
+	if (UAnimMontage* Montage = AttackMontage.Get())
+	{
+		if (GetCurrentMontage() == Montage || PlayAnimMontage(Montage) <= 0.0f)
+		{
+			return false;
+		}
+
+		const FVector ToPlayer = TargetPlayer->GetActorLocation() - GetActorLocation();
+		SetActorRotation(FRotator(0.0, ToPlayer.Rotation().Yaw, 0.0));
+		PendingAttackTarget = TargetPlayer;
+	}
+	else
+	{
+		ApplyAttackDamageTo(TargetPlayer);
+	}
+
+	LastAttackTime = CurrentTime;
+	return true;
+}
+
+void AZoneEnemyBase::ResolveAttackHit()
+{
+	AZonePlayerCharacter* TargetPlayer = PendingAttackTarget.Get();
+	PendingAttackTarget.Reset();
+
+	if (!CanHitPlayer(TargetPlayer))
+	{
+		return;
+	}
+
+	const FVector Forward = GetActorForwardVector().GetSafeNormal2D();
+	const FVector ToPlayer = TargetPlayer->GetActorLocation() - GetActorLocation();
+	if (FVector::DotProduct(Forward, ToPlayer) >= 0.0)
+	{
+		ApplyAttackDamageTo(TargetPlayer);
+	}
+}
+
+bool AZoneEnemyBase::CanHitPlayer(AZonePlayerCharacter* TargetPlayer) const
+{
+	if (IsDead() || !IsValid(TargetPlayer) || TargetPlayer->IsDead()
+		|| !FMath::IsFinite(AttackDamage) || AttackDamage <= 0.0f)
 	{
 		return false;
 	}
@@ -131,69 +182,30 @@ bool AZoneEnemyBase::TryAttackPlayer(
 		return false;
 	}
 
-	// 우선 높이 차이까지 포함한 중심 간 거리로 검사
-	const float SafeAttackRange = FMath::Max(AttackRange, 1.0f);
-
-	const float DistanceSquared = FVector::DistSquared(
-		GetActorLocation(),
-		TargetPlayer->GetActorLocation()
-	);
-
-	if (DistanceSquared > FMath::Square(SafeAttackRange))
+	const FVector Origin = GetActorLocation();
+	const FVector TargetLocation = TargetPlayer->GetActorLocation();
+	if (FVector::DistSquared(Origin, TargetLocation) > FMath::Square(GetAttackRange()))
 	{
 		return false;
 	}
 
-	// 공격 간격 검사
-	const double CurrentTime = World->GetTimeSeconds();
-	const float SafeAttackInterval =
-		FMath::Max(AttackInterval, 0.1f);
-
-	if (CurrentTime - LastAttackTime < SafeAttackInterval)
-	{
-		return false;
-	}
-
-	// 적과 플레이어 사이에 장애물이 있으면 공격하지 않음
 	FCollisionQueryParams Params;
 	Params.AddIgnoredActor(this);
 	Params.AddIgnoredActor(TargetPlayer);
 
 	FHitResult HitResult;
-
-	const bool bBlocked = World->LineTraceSingleByChannel(
-		HitResult,
-		GetActorLocation(),
-		TargetPlayer->GetActorLocation(),
-		ECC_Visibility,
-		Params
+	return !World->LineTraceSingleByChannel(
+		HitResult, Origin, TargetLocation, ECC_Visibility, Params
 	);
+}
 
-	if (bBlocked)
-	{
-		return false;
-	}
-
-	if (!FMath::IsFinite(AttackDamage) || AttackDamage <= 0.0f)
-	{
-		return false;
-	}
-
-	// 실제 공격이 성립한 시각 기록
-	LastAttackTime = CurrentTime;
-
-	UE_LOG(
-		LogTemp,
-		Log,
+void AZoneEnemyBase::ApplyAttackDamageTo(AZonePlayerCharacter* TargetPlayer)
+{
+	UE_LOG(LogTemp, Log,
 		TEXT("[EnemyAttack] Attack. Enemy=%s Player=%s Damage=%.1f"),
-		*GetName(),
-		*TargetPlayer->GetName(),
-		AttackDamage
-	);
+		*GetName(), *TargetPlayer->GetName(), AttackDamage);
 
 	TargetPlayer->ApplyDamage(AttackDamage);
-
-	return true;
 }
 
 void AZoneEnemyBase::Die()
